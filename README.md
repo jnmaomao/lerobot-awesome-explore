@@ -44,6 +44,62 @@ lerobot-info
 </div>
 
 LeRobot provides a unified `Robot` class interface that decouples control logic from hardware specifics. It supports a wide range of robots and teleoperation devices.
+```bash
+pip install -e ".[nexarm]"
+```
+
+### Verify
+
+```bash
+python -c "from lerobot.robots.nexarm_follower import NexArmFollower; print('OK')"
+```
+
+### Connect Hardware
+
+1. Plug the **follower arm** ESP32 into the PC via USB.
+2. Plug the **leader arm** ESP32 into the PC via USB.
+3. Plug in both USB cameras (front + wrist).
+
+### Platform Support
+
+| Platform | Status | Notes |
+|----------|--------|-------|
+| Windows 10/11 | Verified | Install CH340 driver; port format `COM19` |
+| Ubuntu 20.04+ | Verified | Port format `/dev/ttyUSB0`; add user to `dialout` group |
+| macOS | Verified | Port format `/dev/tty.usbserial-xxx` |
+
+---
+
+## Step 1: Find Serial Ports
+
+Identify which port corresponds to the leader and which to the follower.
+
+```bash
+python -m lerobot.scripts.lerobot_find_port
+```
+
+Typical output on Windows:
+
+| Port | Device |
+|------|--------|
+| COM18 | Leader ESP32 |
+| COM19 | Follower ESP32 |
+
+On Linux these are typically `/dev/ttyUSB0` and `/dev/ttyUSB1`.
+
+> Tip: plug in one arm at a time if you are unsure which port belongs to which arm.
+
+---
+
+## Step 2: Find Cameras
+
+Identify which camera index is `front` and which is `wrist`.
+
+```bash
+python -m lerobot.scripts.lerobot_find_cameras opencv
+```
+
+Or scan manually and save images to compare:
 
 ```python
 from lerobot.robots.myrobot import MyRobot
@@ -167,6 +223,10 @@ If you are referencing our research or the academic paper, please also cite our 
 ```
 
 </details>
+**Camera not found**
+- Run `lerobot-find-cameras opencv` to scan available indices.
+- Close other programs using the camera (OBS, browser, etc.).
+- Re-scan after unplugging and replugging USB devices.
 
 ## Contribute
 
