@@ -140,7 +140,22 @@ def say(text: str, blocking: bool = False):
 
 
 def log_say(text: str, play_sounds: bool = True, blocking: bool = False):
-    logging.info(text)
+    # ANSI color codes for status visualization
+    GREEN = "\033[92m"    # Idle/Stop/Exit
+    YELLOW = "\033[93m"   # Reset phase
+    RED = "\033[91m"      # Recording phase
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
+
+    # Determine color based on status
+    if "Recording episode" in text or "Re-record episode" in text:
+        colored_text = f"{BOLD}{RED}● {text}{RESET}"
+    elif "Reset the environment" in text:
+        colored_text = f"{BOLD}{YELLOW}● {text}{RESET}"
+    else:
+        colored_text = f"{BOLD}{GREEN}● {text}{RESET}"
+
+    logging.info(colored_text)
 
     if play_sounds:
         say(text, blocking)

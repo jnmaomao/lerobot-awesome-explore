@@ -247,6 +247,15 @@ class RolloutConfig:
     # leave the robot in its final achieved pose at shutdown.
     return_to_initial_position: bool = True
 
+    # Pre-inference positioning
+    # When True, slowly move the robot from its current position (after connect)
+    # to the robot's safe_rest_position before starting the inference loop.
+    # This ensures the robot starts from a position within the training data
+    # distribution, which is critical for imitation learning policies (SmolVLA, ACT, etc.).
+    # The move is verified: if the robot does not reach the target within tolerance,
+    # the rollout is aborted before any policy inference occurs.
+    move_to_start_position: bool = False
+
     # Torch compile
     use_torch_compile: bool = False
     torch_compile_backend: str = "inductor"

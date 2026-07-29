@@ -1,0 +1,54 @@
+# NexArm SmolVLA training config
+# Dataset: nexarm_smolvla/clean (49 episodes, 29303 frames, Episode 30 已删除)
+# Usage:
+#   python -m lerobot.scripts.lerobot_train_yaml --config_path=examples/nexarm_SmolVLA/train.yaml
+#
+# Or via CLI args (recommended to avoid JSON parsing issues):
+#   lerobot-train \
+#     --dataset.repo_id=local/nexarm_smolvla_clean \
+#     --dataset.root=/home/kingpoint/kp_robot/nexarm_finish_zip/finsh/datasets/nexarm_smolvla/clean \
+#     --policy.type=smolvla \
+#     --steps=54945 --batch_size=8
+
+dataset:
+  repo_id: local/nexarm_smolvla_clean
+  root: /home/kingpoint/kp_robot/nexarm_finish_zip/finsh/datasets/nexarm_smolvla/clean
+
+policy:
+  type: smolvla
+  # --- Action chunking ---
+  chunk_size: 50
+  n_action_steps: 50
+  # --- Vision encoder ---
+  freeze_vision_encoder: false    # Unfreeze for better performance on specialized tasks (NexArm)
+  # --- Expert training ---
+  train_expert_only: true
+  train_state_proj: true
+  # --- VLM backbone ---
+  vlm_model_name: HuggingFaceTB/SmolVLM2-500M-Video-Instruct
+  load_vlm_weights: false         # False = train expert from scratch; True = init from pretrained SmolVLA
+  # --- Image preprocessing ---
+  resize_imgs_with_padding: [512, 512]
+  # --- Decoding ---
+  num_steps: 10
+  # --- Optimizer ---
+  optimizer_lr: 1.0e-4
+  optimizer_weight_decay: 1.0e-10
+  optimizer_grad_clip_norm: 10
+  # --- Scheduler ---
+  scheduler_warmup_steps: 1000
+  scheduler_decay_steps: 54945
+  scheduler_decay_lr: 2.5e-6
+  push_to_hub: false
+
+output_dir: outputs/train/nexarm_smolvla
+job_name: nexarm_smolvla
+seed: 1000
+batch_size: 8
+steps: 54945
+save_freq: 5000
+log_freq: 100
+eval_freq: 99999
+
+wandb:
+  enable: false

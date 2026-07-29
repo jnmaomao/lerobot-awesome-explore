@@ -1,0 +1,62 @@
+# NexArm SmolVLA inference config - Sentry strategy (inference with recording)
+# Usage: lerobot-rollout --config_path=examples/nexarm_SmolVLA/inference.yaml --policy.path=outputs/train/nexarm_smolvla_finetune/checkpoints/015000/pretrained_model
+#
+# Sentry strategy: continuous inference with data recording
+# - WARNING: Sentry forces streaming_encoding=true (code override, see rollout/configs.py:243-249)
+# - USB 2.0 + HUB environment may cause SerialTimeoutException due to GPU DMA vs USB bus contention
+# - For pure inference without recording, use inference_base.yaml instead
+
+robot:
+  type: nexarm_follower
+  port: /dev/ttyUSB1          # Follower (slave) ESP32 serial port
+                       # Windows: COM19  |  Linux: /dev/ttyUSB1  |  macOS: /dev/tty.usbserial-120
+  baudrate: 1000000
+  disable_torque_on_disconnect: true    # 断开时松力矩，安全选项
+
+  # ===== Safety Parameters =====
+  # State anomaly detection: values within this margin from 0 or 4095 are considered
+  # drop-packet errors. Set to 0 to disable. Default: 100 (safe range [100, 3995])
+  state_safety_margin: 100
+
+  # Consecutive anomaly threshold: log severe warning when exceeded
+  # Default: 5 frames (~0.17s at 30 FPS)
+  max_consecutive_anomalies: 5
+
+  # Maximum relative movement per step: prevents sudden jerky motions
+  # Default: 500 (~12% of full range [0, 4095]). Set to 4095 to disable.
+  max_relative_target: 500
+
+  cameras:
+    front:
+      type: opencv
+      index_or_path: 6
+      width: 640
+      height: 480
+      fps: 30                  # video6 硬件仅支持 30fps
+      fourcc: MJPG           # MJPG 压缩，带宽 ~0.5 MB/s
+    wrist:
+      type: opencv
+      index_or_path: 4
+      width: 640
+      height: 480
+      fps: 30                  # 与 front 保持一致
+      fourcc: MJPG           # 尝试 MJPG（video4 仅支持 YUYV，会自动回退）
+
+strategy:
+  type: sentry
+
+dataset:
+  repo_id: rollout_nexarm_pick
+  single_task: "pick up the object"
+  fps: 30
+  video: true
+  push_to_hub: false
+  streaming_encoding: true   # Sentry 强制设为 true（此行会被代码覆盖，仅作文档说明）
+
+fps: 30
+duration: 30
+return_to_initial_position: false       # 禁用归位，保持推理最后一帧姿态
+device: cuda
+task: "pick up the object"
+display_data: false
+play_sounds: false

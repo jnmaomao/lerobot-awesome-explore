@@ -35,6 +35,9 @@ class NexArmFollowerConfig(RobotConfig):
     # motion_speed: 0–3400 raw units/s. 0 = no limit.
     motion_acc: int = 100
     motion_speed: int = 2000
-
+    safe_rest_positions: dict[str, float] = field(default_factory=dict)
+    state_safety_margin: int = 100
+    max_consecutive_anomalies: int = 5
+    max_relative_target: float | dict[str, float] = 500.0
     # cameras
     cameras: dict[str, CameraConfig] = field(default_factory=dict)

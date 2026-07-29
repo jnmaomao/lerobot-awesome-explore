@@ -164,6 +164,10 @@ class OpenCVCamera(Camera):
                 f"Failed to open {self}.Run `lerobot-find-cameras opencv` to find available cameras."
             )
 
+        # Minimize V4L2 driver buffer to reduce frame latency on USB 2.0 buses.
+        # Default buffer (3-10 frames) causes stale frames under bandwidth pressure.
+        self.videocapture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
         self._configure_capture_settings()
         self._start_read_thread()
 

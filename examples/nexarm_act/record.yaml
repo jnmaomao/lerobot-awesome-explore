@@ -1,0 +1,63 @@
+# NexArm dataset recording config
+# Usage: python -m lerobot.scripts.lerobot_record --config_path=examples/nexarm/record.yaml
+
+robot:
+  type: nexarm_follower
+  port: /dev/ttyUSB0          # Follower (slave) ESP32 serial port
+                       # Windows: COM19  |  Linux: /dev/ttyUSB1  |  macOS: /dev/tty.usbserial-120
+  baudrate: 1000000
+  disable_torque_on_disconnect: true    # 断开时松力矩
+
+  # ===== Safety Parameters =====
+  # State anomaly detection: values within this margin from 0 or 4095 are considered
+  # drop-packet errors. Set to 0 to disable. Default: 100 (safe range [100, 3995])
+  state_safety_margin: 100
+
+  # Consecutive anomaly threshold: log severe warning when exceeded
+  # Default: 5 frames (~0.17s at 30 FPS)
+  max_consecutive_anomalies: 5
+
+  # Maximum relative movement per step: prevents sudden jerky motions
+  # Default: 500 (~12% of full range [0, 4095]). Set to 4095 to disable.
+  max_relative_target: 500
+
+  cameras:
+    front:
+      type: opencv
+      index_or_path: 6
+      width: 640
+      height: 480
+      fps: 30
+    wrist:
+      type: opencv
+      index_or_path: 4
+      width: 640
+      height: 480
+      fps: 30
+
+teleop:
+  type: nexarm_leader
+  port: /dev/ttyUSB1          # Leader (master) ESP32 serial port
+                       # Windows: COM18  |  Linux: /dev/ttyUSB0  |  macOS: /dev/tty.usbserial-110
+  baudrate: 1000000
+
+dataset:
+  repo_id: local/nexarm_pick
+  single_task: "pick up the object"
+  num_episodes: 10
+  episode_time_s: 20
+  reset_time_s: 15
+  fps: 30
+  video: true
+  streaming_encoding: false  # 关闭 streaming，避免编码器初始化阻塞控制循环
+  vcodec: h264_nvenc         # episode 结束后 GPU 批量编码，RTX 5060 完全够用
+  push_to_hub: false
+  root: /home/kingpoint/kp_robot/nexarm_finish_zip/finsh/datasets/0715_40   # 指定你想要的路径
+
+display_data: false
+play_sounds: false
+
+# Status lamp (optional): ESP32 + NeoPixel ring that shows recording progress
+# Colors: red=recording, orange=resetting, green=done
+# lamp_port: COM4            # Windows
+# lamp_port: /dev/ttyUSB2    # Linux

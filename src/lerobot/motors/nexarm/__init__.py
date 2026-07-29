@@ -12,6 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .nexarm import NexArmMotorsBus
+from .nexarm import POSITION_CENTER, NexArmMotorsBus
 
-__all__ = ["NexArmMotorsBus"]
+__all__ = ["NexArmMotorsBus", "POSITION_CENTER"]

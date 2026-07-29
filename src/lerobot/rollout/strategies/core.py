@@ -139,9 +139,48 @@ class RolloutStrategy(abc.ABC):
 
     @staticmethod
     def _return_to_initial_position(hw: HardwareContext, duration_s: float = 3.0, fps: int = 50) -> None:
-        """Smoothly interpolate the robot back to its initial position."""
+        """Smoothly interpolate the robot back to its initial position.
+
+        Safety check: if any joint in the captured ``initial_position`` is at
+        an extreme value (≤ margin or ≥ max − margin), that joint is replaced
+        with the corresponding value from ``safe_rest_position`` (if the robot
+        defines one).  This prevents driving joints to positions like 0 or 4095
+        which cause rapid contraction, while preserving valid startup poses.
+
+        If the robot has no ``safe_rest_position`` property, the raw
+        ``initial_position`` is used unchanged (backward compatible).
+        """
         robot = hw.robot_wrapper
-        target = hw.initial_position
+        target = dict(hw.initial_position) if hw.initial_position else {}
+
+        inner = hw.robot_wrapper.inner
+        safe_rest = getattr(inner, "safe_rest_position", None)
+        pos_range = getattr(inner, "position_range", None)
+
+        if safe_rest and pos_range and target:
+            pos_min, pos_max = pos_range
+            # Margin: values within this distance from min or max are unsafe.
+            # For NexArm [0, 4095], margin=100 means [0,100] or [3995,4095]
+            # is considered extreme and will be replaced with safe_rest.
+            UNSAFE_MARGIN = 100
+            unsafe_joints = []
+            for k, v in target.items():
+                safe_v = safe_rest.get(k)
+                if safe_v is None:
+                    continue
+                if v <= (pos_min + UNSAFE_MARGIN) or v >= (pos_max - UNSAFE_MARGIN):
+                    unsafe_joints.append((k, v, safe_v))
+                    target[k] = safe_v
+            if unsafe_joints:
+                detail = ", ".join(f"{k}={v}->{sv}" for k, v, sv in unsafe_joints)
+                logger.warning(
+                    "Initial position has extreme values [%s] — replaced with safe_rest_position. "
+                    "This usually means the robot was in a contracted/extended pose at startup.",
+                    detail,
+                )
+            else:
+                logger.info("Initial position is safe — using captured startup pose as return target.")
+
         try:
             current_obs = robot.get_observation()
             current_pos = {k: v for k, v in current_obs.items() if k in target}
@@ -152,6 +191,15 @@ class RolloutStrategy(abc.ABC):
                 for k in current_pos:
                     interp[k] = current_pos[k] * (1 - t) + target[k] * t
                 robot.send_action(interp)
+                # Update the position cache so the next send_action() uses
+                # the correct present_pos for ensure_safe_goal_position.
+                # Without this, the cache stays stale (only updated by
+                # get_observation()) and the growing delta triggers
+                # spurious safety-clamp warnings.
+                # Access the inner robot when wrapped by ThreadSafeRobot.
+                inner = getattr(robot, "inner", robot)
+                if hasattr(inner, "_current_positions_cache"):
+                    inner._current_positions_cache = {k: float(v) for k, v in interp.items()}
                 precise_sleep(1 / fps)
         except Exception as e:
             logger.warning("Could not return to initial position: %s", e)

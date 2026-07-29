@@ -25,13 +25,16 @@ import contextlib
 import logging
 import time
 from functools import cached_property
+from typing import Any
 
 from lerobot.cameras import make_cameras_from_configs
 from lerobot.motors import MotorCalibration
 from lerobot.motors.nexarm import NexArmMotorsBus
-from lerobot.motors.nexarm.nexarm import JOINT_NAMES, POSITION_MAX, POSITION_MIN
+from lerobot.motors.nexarm.nexarm import JOINT_NAMES, POSITION_CENTER, POSITION_MAX, POSITION_MIN
 from lerobot.types import RobotAction, RobotObservation
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
+from lerobot.robots.utils import ensure_safe_goal_position
+from lerobot.utils.robot_utils import precise_sleep
 
 from ..robot import Robot
 from .config_nexarm_follower import NexArmFollowerConfig
@@ -58,6 +61,13 @@ class NexArmFollower(Robot):
         self.bus = NexArmMotorsBus(port=config.port, baudrate=config.baudrate)
         self.cameras = make_cameras_from_configs(config.cameras)
 
+        # Safety state for anomaly detection and recovery
+        self._last_valid_obs: dict[str, Any] | None = None
+        self._consecutive_anomaly_count: int = 0
+        self._anomaly_logged: bool = False
+        # Cache current positions from last observation (used for relative action limit)
+        self._current_positions_cache: dict[str, float] | None = None
+
     @property
     def _motors_ft(self) -> dict[str, type]:
         return {f"{name}.pos": float for name in JOINT_NAMES}
@@ -75,6 +85,25 @@ class NexArmFollower(Robot):
     @cached_property
     def action_features(self) -> dict[str, type]:
         return self._motors_ft
+
+    @property
+    def safe_rest_position(self) -> dict[str, float]:
+        """Safe rest position for NexArm — all joints at center (2048).
+
+        This is the position the robot should move to when returning to a
+        "safe" pose on shutdown, instead of the raw zero (0) which causes
+        rapid contraction. Each joint defaults to POSITION_CENTER (2048)
+        but can be overridden per-joint via ``config.safe_rest_positions``.
+        """
+        defaults = {f"{name}.pos": float(POSITION_CENTER) for name in JOINT_NAMES}
+        if self.config.safe_rest_positions:
+            defaults.update(self.config.safe_rest_positions)
+        return defaults
+
+    @property
+    def position_range(self) -> tuple[int, int]:
+        """Min/max servo position range for this robot (0, 4095)."""
+        return (POSITION_MIN, POSITION_MAX)
 
     @property
     def is_connected(self) -> bool:
@@ -98,6 +127,29 @@ class NexArmFollower(Robot):
             cam.connect()
 
         self.configure()
+
+        # Interpolate from current servo positions to safe rest / goal to avoid sudden jerky motion.
+        if self.config.safe_rest_positions:
+            goal_positions = [
+                int(self.config.safe_rest_positions.get(f"{name}.pos", POSITION_CENTER))
+                for name in JOINT_NAMES
+            ]
+        else:
+            goal_positions = [POSITION_CENTER] * len(JOINT_NAMES)
+
+        try:
+            current_positions = self.bus.read_positions()
+        except (TimeoutError, OSError):
+            current_positions = [POSITION_CENTER] * len(JOINT_NAMES)
+
+        _CONNECT_MOVE_STEPS = 50  # ~1s at 50Hz
+        _CONNECT_MOVE_FPS = 50
+        for step in range(1, _CONNECT_MOVE_STEPS + 1):
+            t = step / _CONNECT_MOVE_STEPS
+            interp = [int(round(cur * (1 - t) + goal * t)) for cur, goal in zip(current_positions, goal_positions)]
+            self.bus.write_positions(interp)
+            precise_sleep(1 / _CONNECT_MOVE_FPS)
+
         logger.info(f"{self} connected.")
 
     def calibrate(self) -> None:
@@ -172,6 +224,15 @@ class NexArmFollower(Robot):
             dt_ms = (time.perf_counter() - start) * 1e3
             logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
 
+        # Update position cache for use in send_action() relative limit
+        self._current_positions_cache = {
+            f"{name}.pos": float(positions[i]) for i, name in enumerate(JOINT_NAMES)
+        }
+
+        # State anomaly detection and recovery
+        if self.config.state_safety_margin > 0:
+            obs_dict = self._validate_and_recover_state(obs_dict)
+
         return obs_dict
 
     @check_if_not_connected
@@ -184,13 +245,24 @@ class NexArmFollower(Robot):
         Returns:
             RobotAction: The action sent to the motors.
         """
-        goal = []
+        goal = {}
         for name in JOINT_NAMES:
             val = float(action[f"{name}.pos"])
-            clamped = max(POSITION_MIN, min(POSITION_MAX, int(round(val))))
-            goal.append(clamped)
-        self.bus.write_positions(goal)
-        return {f"{name}.pos": float(goal[i]) for i, name in enumerate(JOINT_NAMES)}
+            goal[f"{name}.pos"] = max(POSITION_MIN, min(POSITION_MAX, int(round(val))))
+
+        # Apply relative movement safety limit using cached positions from last get_observation()
+        if self._current_positions_cache is not None and self.config.max_relative_target < POSITION_MAX:
+            goal_present_pos = {}
+            for name in JOINT_NAMES:
+                key = f"{name}.pos"
+                if key in self._current_positions_cache:
+                    goal_present_pos[key] = (goal[key], self._current_positions_cache[key])
+            if goal_present_pos:
+                goal = ensure_safe_goal_position(goal_present_pos, self.config.max_relative_target)
+
+        goal_list = [goal[f"{name}.pos"] for name in JOINT_NAMES]
+        self.bus.write_positions(goal_list)
+        return {f"{name}.pos": float(goal_list[i]) for i, name in enumerate(JOINT_NAMES)}
 
     @check_if_not_connected
     def disconnect(self) -> None:
@@ -215,3 +287,68 @@ class NexArmFollower(Robot):
 
         self.bus.disconnect()
         logger.info(f"{self} disconnected.")
+
+    def _validate_and_recover_state(self, obs: dict) -> dict:
+        """Validate state values and recover from anomalies.
+
+        Detects extreme boundary values (likely from drop-packet errors) and
+        replaces them with the last valid state. Tracks consecutive anomalies
+        and triggers a severe warning when threshold is exceeded.
+        """
+        margin = self.config.state_safety_margin
+        pos_min = POSITION_MIN + margin
+        pos_max = POSITION_MAX - margin
+
+        anomalous_joints = []
+        for name in JOINT_NAMES:
+            key = f"{name}.pos"
+            val = obs.get(key)
+            if val is not None and (val < pos_min or val > pos_max):
+                anomalous_joints.append((name, val))
+
+        if not anomalous_joints:
+            self._last_valid_obs = obs.copy()
+            if self._consecutive_anomaly_count > 0:
+                logger.info(
+                    "State values recovered to normal after %d anomalous frame(s)",
+                    self._consecutive_anomaly_count,
+                )
+            self._consecutive_anomaly_count = 0
+            self._anomaly_logged = False
+            return obs
+
+        # Anomaly detected
+        self._consecutive_anomaly_count += 1
+        anomaly_details = ", ".join(f"{n}={v:.0f}" for n, v in anomalous_joints)
+
+        if self._consecutive_anomaly_count >= self.config.max_consecutive_anomalies:
+            logger.error(
+                "CRITICAL: %d consecutive anomalous frames detected! Affected joints: [%s]. "
+                "This indicates a persistent communication issue or hardware fault. "
+                "Consider checking serial connection and servo status.",
+                self._consecutive_anomaly_count,
+                anomaly_details,
+            )
+        elif not self._anomaly_logged:
+            logger.warning(
+                "State anomaly detected (frame %d): [%s]. "
+                "Using last valid state for recovery. Safe range: [%d, %d]",
+                self._consecutive_anomaly_count,
+                anomaly_details,
+                pos_min,
+                pos_max,
+            )
+            self._anomaly_logged = True
+
+        if self._last_valid_obs is not None:
+            recovered_obs = self._last_valid_obs.copy()
+            for key in obs:
+                if key not in recovered_obs:
+                    recovered_obs[key] = obs[key]
+            return recovered_obs
+        else:
+            logger.warning("No valid state cache available, using center positions as fallback")
+            fallback_obs = obs.copy()
+            for name in JOINT_NAMES:
+                fallback_obs[f"{name}.pos"] = float(POSITION_CENTER)
+            return fallback_obs

@@ -93,6 +93,7 @@ import logging
 import time
 from dataclasses import asdict, dataclass
 from pprint import pformat
+from typing import Callable
 
 from lerobot.cameras import CameraConfig  # noqa: F401
 from lerobot.cameras.opencv import OpenCVCameraConfig  # noqa: F401
@@ -167,6 +168,12 @@ from lerobot.utils.visualization_utils import (
     log_visualization_data,
     shutdown_visualization,
 )
+from lerobot.utils.status_lamp import (
+    StatusLamp,
+    COLOR_RECORD,
+    COLOR_RESET,
+    make_lamp_progress_cb,
+)
 
 
 @dataclass
@@ -190,6 +197,8 @@ class RecordConfig:
     play_sounds: bool = True
     # Resume recording on an existing dataset.
     resume: bool = False
+    # Serial port for status lamp (e.g. "COM4"). None = lamp disabled.
+    lamp_port: str | None = None
 
     def __post_init__(self):
         if self.teleop is None:
@@ -247,6 +256,7 @@ def record_loop(
     display_data: bool = False,
     display_mode: str = "rerun",
     display_compressed_images: bool = False,
+    on_progress: Callable[[float], None] | None = None,
 ):
     if dataset is not None and dataset.fps != fps:
         raise ValueError(f"The dataset fps should be equal to requested fps ({dataset.fps} != {fps}).")
@@ -359,6 +369,9 @@ def record_loop(
 
         timestamp = time.perf_counter() - start_episode_t
 
+        if on_progress is not None and control_time_s is not None:
+            on_progress(1.0 - timestamp / control_time_s)
+
 
 @parser.wrap()
 def record(
@@ -410,6 +423,7 @@ def record(
 
     dataset = None
     listener = None
+    lamp = StatusLamp(cfg.lamp_port) if cfg.lamp_port else None
 
     try:
         if cfg.resume:
@@ -486,6 +500,7 @@ def record(
                     display_data=cfg.display_data,
                     display_mode=cfg.display_mode,
                     display_compressed_images=display_compressed_images,
+                    on_progress=make_lamp_progress_cb(lamp, COLOR_RECORD) if lamp else None,
                 )
 
                 # Execute a few seconds without recording to give time to manually reset the environment
@@ -507,6 +522,7 @@ def record(
                         single_task=cfg.dataset.single_task,
                         display_data=cfg.display_data,
                         display_mode=cfg.display_mode,
+                        on_progress=make_lamp_progress_cb(lamp, COLOR_RESET) if lamp else None,
                     )
 
                 if events["rerecord_episode"]:
@@ -520,6 +536,9 @@ def record(
                 recorded_episodes += 1
     finally:
         log_say("Stop recording", cfg.play_sounds, blocking=True)
+        if lamp:
+            lamp.off()
+            lamp.shutdown()
 
         if dataset:
             dataset.finalize()

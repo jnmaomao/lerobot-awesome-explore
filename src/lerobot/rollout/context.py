@@ -28,6 +28,7 @@ from threading import Event
 import torch
 
 from lerobot.configs import FeatureType, PreTrainedConfig
+from lerobot.utils.robot_utils import precise_sleep
 from lerobot.datasets import (
     LeRobotDataset,
     aggregate_pipeline_dataset_features,
@@ -155,6 +156,72 @@ class RolloutContext:
 
 
 # ---------------------------------------------------------------------------
+# Pre-inference positioning helpers
+# ---------------------------------------------------------------------------
+
+
+def _move_to_position(
+    robot,
+    target: dict[str, float],
+    duration_s: float = 3.0,
+    fps: int = 50,
+) -> None:
+    """Smoothly interpolate the robot from its current position to *target*.
+
+    Reads the current joint positions, then linearly interpolates over
+    *duration_s* seconds at *fps* Hz, sending each intermediate position
+    via ``robot.send_action()``.
+    """
+    current_obs = robot.get_observation()
+    current_pos = {k: v for k, v in current_obs.items() if k in target}
+    steps = max(int(duration_s * fps), 1)
+    for step in range(1, steps + 1):
+        t = step / steps
+        interp = {}
+        for k in current_pos:
+            interp[k] = current_pos[k] * (1 - t) + target[k] * t
+        robot.send_action(interp)
+        # Update the position cache so the next send_action() uses
+        # the correct present_pos for ensure_safe_goal_position.
+        # Access the inner robot when wrapped by ThreadSafeRobot.
+        inner = getattr(robot, "inner", robot)
+        if hasattr(inner, "_current_positions_cache"):
+            inner._current_positions_cache = {k: float(v) for k, v in interp.items()}
+        precise_sleep(1 / fps)
+
+
+def _verify_position(
+    robot,
+    target: dict[str, float],
+    tolerance: float = 50.0,
+) -> bool:
+    """Verify the robot has reached *target* within *tolerance* per joint.
+
+    Returns True if every joint is within tolerance, False otherwise.
+    Logs per-joint errors for diagnostics.
+    """
+    current_obs = robot.get_observation()
+    current_pos = {k: v for k, v in current_obs.items() if k in target}
+
+    all_ok = True
+    for k, target_v in target.items():
+        current_v = current_pos.get(k)
+        if current_v is None:
+            logger.warning("Joint '%s' not found in robot observation — cannot verify", k)
+            all_ok = False
+            continue
+        error = abs(current_v - target_v)
+        ok = error <= tolerance
+        if not ok:
+            all_ok = False
+        logger.info(
+            "  %s: current=%.1f  target=%.1f  error=%.1f  %s",
+            k, current_v, target_v, error, "✓" if ok else "✗ EXCEEDS TOLERANCE",
+        )
+    return all_ok
+
+
+# ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
 
@@ -260,6 +327,43 @@ def build_rollout_context(
     initial_obs = robot.get_observation()
     initial_position = {k: v for k, v in initial_obs.items() if k.endswith(".pos")}
     logger.info("Captured initial robot position (%d keys)", len(initial_position))
+
+    # --- 3b. Move to start position (if configured) --------------------
+    # For imitation learning policies (SmolVLA, ACT), the robot must start
+    # from a position within the training data distribution.  This step
+    # slowly interpolates from the current position to the robot's
+    # safe_rest_position (configured as the training starting position),
+    # then verifies arrival before allowing any policy inference to proceed.
+    # If the robot is already at the target (e.g. previous inference ended
+    # with return_to_initial_position=true), the move is skipped.
+    if cfg.move_to_start_position:
+        safe_rest = getattr(robot, "safe_rest_position", None)
+        if safe_rest:
+            POSITION_TOLERANCE = 50.0
+            # Check if already at target — skip unnecessary movement.
+            already_there = _verify_position(robot, safe_rest, tolerance=POSITION_TOLERANCE)
+            if already_there:
+                logger.info("✓ Robot already at start position — skipping move")
+            else:
+                logger.info(
+                    "Moving robot to start position (safe_rest_position) over 3s..."
+                )
+                _move_to_position(robot, safe_rest, duration_s=3.0, fps=50)
+                logger.info("Verifying robot reached start position (tolerance=%.0f)...", POSITION_TOLERANCE)
+                verified = _verify_position(robot, safe_rest, tolerance=POSITION_TOLERANCE)
+                if not verified:
+                    raise RuntimeError(
+                        "Robot did not reach start position within tolerance — "
+                        "aborting rollout to prevent unpredictable policy output. "
+                        "Check for physical obstruction or motor issue."
+                    )
+            logger.info("✓ Robot confirmed at start position — safe to begin inference")
+            # Update initial_position so teardown returns here (not the pre-move position).
+            initial_position = dict(safe_rest)
+        else:
+            logger.warning(
+                "move_to_start_position=True but robot has no safe_rest_position — skipping"
+            )
 
     robot_wrapper = ThreadSafeRobot(robot)
 
