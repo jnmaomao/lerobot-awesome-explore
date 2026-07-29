@@ -167,12 +167,12 @@ python -m lerobot.scripts.lerobot_edit_dataset \
 
 ## 步骤四：数据质量评估
 
-使用项目提供的 `evaluate_dataset.py` 脚本（基于 LeRobot 内置 API）：
+使用项目提供的 `scripts/evaluate_dataset.py` 脚本（基于 LeRobot 内置 API）：
 
 ### 执行命令
 
 ```bash
-python evaluate_dataset.py local/nexarm_merged datasets/nexarm_merged
+python scripts/evaluate_dataset.py local/nexarm_merged datasets/nexarm_merged
 ```
 
 ### 评估内容
@@ -426,7 +426,7 @@ python -m lerobot.scripts.lerobot_edit_dataset \
     --operation.show_features true
 
 # ==================== 步骤4：质量评估 ====================
-python evaluate_dataset.py local/nexarm_merged datasets/nexarm_merged
+python scripts/evaluate_dataset.py local/nexarm_merged datasets/nexarm_merged
 
 # ==================== 步骤5：异常值处理（如有需要） ====================
 # 检测异常 Episode 后，删除首帧初始化异常的 Episode

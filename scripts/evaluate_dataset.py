@@ -3,11 +3,11 @@
 数据集质量评估脚本（基于 LeRobot 内置 API）
 
 用法:
-    python evaluate_dataset.py <repo_id> <root>
+    python scripts/evaluate_dataset.py <repo_id> <root>
 
 示例:
-    python evaluate_dataset.py local/nexarm_merged datasets/nexarm_merged
-    python evaluate_dataset.py local/0715_10 datasets/0715_10
+    python scripts/evaluate_dataset.py local/nexarm_merged datasets/nexarm_merged
+    python scripts/evaluate_dataset.py local/0715_10 datasets/0715_10
 """
 
 import json
@@ -240,7 +240,7 @@ def evaluate_dataset(repo_id: str, root: str):
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 3:
-        print("用法: python evaluate_dataset.py <repo_id> <root>")
-        print("示例: python evaluate_dataset.py local/nexarm_merged datasets/nexarm_merged")
+        print("用法: python scripts/evaluate_dataset.py <repo_id> <root>")
+        print("示例: python scripts/evaluate_dataset.py local/nexarm_merged datasets/nexarm_merged")
         sys.exit(1)
     evaluate_dataset(sys.argv[1], sys.argv[2])

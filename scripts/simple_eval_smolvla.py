@@ -3,7 +3,7 @@
 SmolVLA 离线推理验证脚本
 使用厂商提供的推理流程和处理器
 
-与 simple_eval_act.py 的区别：
+与 scripts/simple_eval_act.py 的区别：
   - SmolVLA 是 VLA 模型，需要语言任务描述（task）作为输入
   - 预处理器包含 TokenizerProcessorStep（语言分词）
   - 需要离线模式加载 VLM processor（设置 HF_HUB_OFFLINE=1）
