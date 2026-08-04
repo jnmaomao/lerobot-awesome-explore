@@ -69,24 +69,20 @@ NexArm 使用自定义 CommProtocol 通过 USB 串口通信：
 ```bash
 conda create -n nexarm python=3.12 -y
 conda activate nexarm
-cd finsh
 
-# 安装 lerobot（editable 模式，包含所有必要依赖）
-pip install -e ".[nexarm]"
+# 安装 lerobot（editable 模式，包含记录/回放/遥操作/串口通信等核心依赖）
+pip install -e ".[core_scripts]"
 ```
 
-如果需要遥操作时实时可视化（rerun 界面），额外安装：
+如果需要遥操作时实时可视化（rerun/foxglove 界面），`core_scripts` 已包含 viz 依赖，无需额外安装。
 
-```bash
-pip install -e ".[nexarm,viz]"
-```
-
-> **注意：** 不安装 `viz` 也可以正常使用遥操作、采集、训练和推理，只是没有实时画面显示。配置文件中已默认关闭 `display_data`。
+> **注意：** `core_scripts` 包含 dataset + hardware + viz，涵盖 NexArm 所需的全部功能（pyserial 串口通信、视频编解码、可视化）。也可以单独安装 `pip install -e "."` 然后按需添加 extras（如 `pip install -e ".[dataset,hardware]"` 最小安装不含可视化）。
+>
+> **可视化说明：** 不安装 viz 也可以正常使用遥操作、采集、训练和推理，只是没有实时画面显示。配置文件中已默认关闭 `display_data`。`core_scripts` 已包含 rerun 和 foxglove 可视化依赖，无需额外安装。
 
 也可以使用 venv 代替 conda：
 
 ```bash
-cd finsh
 python -m venv .venv
 
 # 激活虚拟环境
@@ -95,7 +91,7 @@ python -m venv .venv
 # Linux/macOS:
 source .venv/bin/activate
 
-pip install -e ".[nexarm]"
+pip install -e ".[core_scripts]"
 ```
 
 ### 2. 验证安装
@@ -178,10 +174,10 @@ for i in range(10):
 
 ### 方式一：使用配置文件
 
-先根据你的实际情况修改 `examples/nexarm/teleoperate.yaml` 中的串口和摄像头索引，然后运行：
+先根据你的实际情况修改 `examples/nexarm_act/teleoperate.yaml` 中的串口和摄像头索引，然后运行：
 
 ```bash
-python -m lerobot.scripts.lerobot_teleoperate --config_path=examples/nexarm/teleoperate.yaml
+python -m lerobot.scripts.lerobot_teleoperate --config_path=examples/nexarm_act/teleoperate.yaml
 ```
 
 ### 方式二：使用命令行参数
@@ -246,7 +242,7 @@ python -m lerobot.scripts.lerobot_record --config_path=examples/nexarm_act/recor
 
 **查找灯的串口：**
 
-> **依赖：** 需要 `pyserial`（NexArm 用户已通过 `pip install -e ".[nexarm]"` 自动安装；其他用户需 `pip install pyserial`）。
+> **依赖：** 需要 `pyserial`（已包含在 `pip install -e ".[core_scripts]"` 中；最小安装用户需 `pip install pyserial`）。
 
 ```bash
 # 方式一：CLI 命令（推荐）
@@ -276,7 +272,7 @@ lamp_port: COM4    # Windows
 ### 仅本地保存（不上传）
 
 ```bash
-python -m lerobot.scripts.lerobot_record --config_path=examples/nexarm/record.yaml --dataset.repo_id=local/nexarm_pick --dataset.push_to_hub=false
+python -m lerobot.scripts.lerobot_record --config_path=examples/nexarm_act/record.yaml --dataset.repo_id=local/nexarm_pick --dataset.push_to_hub=false
 ```
 
 ### 数据质量建议
@@ -297,7 +293,7 @@ python -m lerobot.scripts.lerobot_record --config_path=examples/nexarm/record.ya
 训练需要额外的依赖（accelerate、wandb 等），安装方式：
 
 ```bash
-pip install -e ".[nexarm,training]"
+pip install -e ".[core_scripts,training]"
 ```
 
 ### 运行训练
@@ -306,7 +302,7 @@ pip install -e ".[nexarm,training]"
 python -m lerobot.scripts.lerobot_train --dataset.repo_id=local/nexarm_pick --policy.type=act --output_dir=outputs/train/nexarm_act --batch_size=32 --steps=100000 --save_freq=25000
 ```
 
-> **注意：** 不建议使用 `--config_path=examples/nexarm/train.yaml` 加 `--dataset.repo_id` 覆盖的方式，可能会报 JSON 格式错误。直接使用命令行参数即可。
+> **注意：** 不建议使用 `--config_path=examples/nexarm_act/train.yaml` 加 `--dataset.repo_id` 覆盖的方式，可能会报 JSON 格式错误。直接使用命令行参数即可。
 
 ### 训练建议
 
@@ -344,7 +340,7 @@ outputs/train/nexarm_act/checkpoints/last/pretrained_model/
 ### 运行推理
 
 ```bash
-python -m lerobot.scripts.lerobot_rollout --config_path=examples/nexarm/inference.yaml --policy.path=outputs/train/nexarm_act/checkpoints/last/pretrained_model
+python -m lerobot.scripts.lerobot_rollout --config_path=examples/nexarm_act/inference.yaml --policy.path=outputs/train/nexarm_act/checkpoints/last/pretrained_model
 ```
 
 ### 重要说明
@@ -458,7 +454,7 @@ src/lerobot/
 | `src/lerobot/scripts/lerobot_replay.py` | 添加 `nexarm_follower` import |
 | `src/lerobot/scripts/lerobot_calibrate.py` | 添加 `nexarm_follower` 和 `nexarm_leader` import |
 | `src/lerobot/scripts/lerobot_find_joint_limits.py` | 添加 `nexarm_follower` 和 `nexarm_leader` import |
-| `pyproject.toml` | 在 `[project.optional-dependencies]` 中添加 `nexarm = ["lerobot[pyserial-dep]"]`；添加 `lerobot-find-lamp-port` 入口点 |
+| `pyproject.toml` | 添加 `lerobot-find-lamp-port` 入口点 |
 | `src/lerobot/utils/status_lamp.py` | **新增** — 录制状态灯控制器（ESP32 + NeoPixel 环形灯） |
 | `src/lerobot/utils/find_lamp_port.py` | **新增** — 热插拔检测灯的串口 |
 | `src/lerobot/scripts/lerobot_record.py` | 添加 `--lamp_port` 参数、`on_progress` 回调、灯初始化与清理 |
@@ -493,11 +489,12 @@ git checkout -b add-nexarm-support upstream/main
 将本仓库中的 NexArm 相关文件复制到你 fork 的仓库中：
 
 ```bash
-# 从本仓库 (finsh/) 复制
+# 从本仓库复制
 cp -r src/lerobot/motors/nexarm        <你的lerobot>/src/lerobot/motors/
 cp -r src/lerobot/robots/nexarm_follower   <你的lerobot>/src/lerobot/robots/
 cp -r src/lerobot/teleoperators/nexarm_leader  <你的lerobot>/src/lerobot/teleoperators/
-cp -r examples/nexarm                  <你的lerobot>/examples/
+cp -r examples/nexarm_act              <你的lerobot>/examples/
+cp -r examples/nexarm_SmolVLA          <你的lerobot>/examples/
 ```
 
 ### 步骤 3：修改已有文件
@@ -517,7 +514,7 @@ cp -r examples/nexarm                  <你的lerobot>/examples/
 ### 步骤 4：安装并测试
 
 ```bash
-pip install -e ".[nexarm,dev]"
+pip install -e ".[core_scripts,dev]"
 
 # 代码风格检查
 pre-commit install

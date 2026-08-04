@@ -19,9 +19,8 @@ uv sync --locked --extra test --extra dev   # Test + dev tools
 uv sync --locked --extra all                # Everything
 
 # Or install with pip (for NexArm users)
-pip install -e ".[nexarm]"                  # NexArm support
-pip install -e ".[nexarm,viz]"              # With visualization
-pip install -e ".[nexarm,training]"         # With training deps
+pip install -e ".[core_scripts]"             # Core: record, replay, calibrate, teleoperate
+pip install -e ".[core_scripts,training]"    # With training deps
 
 # Pull test artifacts
 git lfs install && git lfs pull
@@ -84,7 +83,7 @@ src/lerobot/
 - `src/lerobot/teleoperators/utils.py` — Added `nexarm_leader` branch in `make_teleoperator_from_config()`
 - `src/lerobot/scripts/*.py` — Added imports for NexArm classes
 
-**NexArm configuration files:** `examples/nexarm/{teleoperate,record,inference,train}.yaml`
+**NexArm configuration files:** `examples/nexarm_act/{teleoperate,record,inference,train}.yaml`, `examples/nexarm_SmolVLA/{teleoperate,record,inference,train}.yaml`
 
 ## Config System (draccus)
 
@@ -92,7 +91,7 @@ Configs are Python dataclasses. CLI args override config fields. Example:
 
 ```bash
 # Use config file
-lerobot-train --config_path=examples/nexarm/train.yaml
+lerobot-train --config_path=examples/nexarm_act/train.yaml
 
 # Override via CLI
 lerobot-train --dataset.repo_id=local/my_dataset --policy.type=act --steps=50000
@@ -105,7 +104,7 @@ lerobot-train --dataset.repo_id=local/my_dataset --policy.type=act --steps=50000
 - **`tests/`** — Pytest suite organized by module. Fixtures in `tests/fixtures/`, mocks in `tests/mocks/`. Hardware tests use skip decorators.
 - **`.github/workflows/`** — CI: `quality.yml` (pre-commit), `fast_tests.yml`, `full_tests.yml`, `security.yml`, `release.yml`.
 - **`docs/source/`** — HF documentation (`.mdx` files). Per-policy READMEs, hardware guides.
-- **`examples/`** — End-user configs organized by robot (e.g., `examples/nexarm/`).
+- **`examples/`** — End-user configs organized by robot (e.g., `examples/nexarm_act/`, `examples/nexarm_SmolVLA/`).
 - **`docker/`** — Dockerfiles for benchmarks (LIBERO, MetaWorld, RoboCasa, etc.).
 - **`benchmarks/`** — Performance benchmarking scripts.
 

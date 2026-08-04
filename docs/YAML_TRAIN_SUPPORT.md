@@ -9,14 +9,14 @@
 ### 方式 1：直接使用 YAML 配置训练
 
 ```bash
-python -m lerobot.scripts.lerobot_train_yaml --config_path=examples/nexarm/train.yaml
+python -m lerobot.scripts.lerobot_train_yaml --config_path=examples/nexarm_act/train.yaml
 ```
 
 ### 方式 2：YAML 配置 + CLI 参数覆盖
 
 ```bash
 python -m lerobot.scripts.lerobot_train_yaml \
-  --config_path=examples/nexarm/train.yaml \
+  --config_path=examples/nexarm_act/train.yaml \
   --batch_size=16 \
   --steps=50000
 ```
@@ -25,7 +25,7 @@ python -m lerobot.scripts.lerobot_train_yaml \
 
 ```bash
 python -m lerobot.scripts.lerobot_train_yaml \
-  --config_path=examples/nexarm/train.yaml \
+  --config_path=examples/nexarm_act/train.yaml \
   --dry-run
 ```
 
@@ -40,7 +40,7 @@ python -m lerobot.scripts.lerobot_train_yaml \
 
 ### YAML 配置（推荐）
 
-`examples/nexarm/train.yaml`:
+`examples/nexarm_act/train.yaml`:
 ```yaml
 dataset:
   repo_id: local/nexarm_merged
@@ -58,7 +58,7 @@ steps: 100000
 ### JSON 配置（仍然支持）
 
 ```bash
-python -m lerobot.scripts.lerobot_train_yaml --config_path=examples/nexarm/train.json
+python -m lerobot.scripts.lerobot_train_yaml --config_path=examples/nexarm_act/train.json
 ```
 
 ## CLI 参数格式支持

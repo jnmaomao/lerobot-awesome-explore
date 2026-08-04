@@ -19,7 +19,7 @@ from lerobot.cameras.opencv import OpenCVCameraConfig
 from lerobot.robots.nexarm_follower import NexArmFollower, NexArmFollowerConfig
 from lerobot.teleoperators.nexarm_leader import NexArmLeader, NexArmLeaderConfig
 from lerobot.utils.robot_utils import precise_sleep
-from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
+from lerobot.utils.visualization_utils import init_visualization, log_visualization_data
 
 
 def parse_args():
@@ -51,7 +51,7 @@ def main():
     leader.connect()
 
     if not args.no_display:
-        init_rerun(session_name="nexarm_teleoperate")
+        init_visualization("rerun", session_name="nexarm_teleoperate")
 
     print("Teleoperation started. Press Ctrl+C to stop.")
     try:
@@ -63,7 +63,7 @@ def main():
             obs = follower.get_observation()
 
             if not args.no_display:
-                log_rerun_data(obs)
+                log_visualization_data("rerun", observation=obs)
 
             precise_sleep(1.0 / args.fps - (time.perf_counter() - start))
     except KeyboardInterrupt:
