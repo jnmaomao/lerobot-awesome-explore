@@ -180,13 +180,17 @@ def _move_to_position(
         interp = {}
         for k in current_pos:
             interp[k] = current_pos[k] * (1 - t) + target[k] * t
-        robot.send_action(interp)
-        # Update the position cache so the next send_action() uses
-        # the correct present_pos for ensure_safe_goal_position.
-        # Access the inner robot when wrapped by ThreadSafeRobot.
+        actual = robot.send_action(interp)
+        # Update the position cache with the *actual* positions returned by
+        # send_action (which may differ from the interpolation intent due to
+        # ensure_safe_goal_position clamping).  Using the clamped values
+        # ensures the next step's relative-movement limit is computed from
+        # the robot's real position, not from an unreachable intent.
         inner = getattr(robot, "inner", robot)
         if hasattr(inner, "_current_positions_cache"):
-            inner._current_positions_cache = {k: float(v) for k, v in interp.items()}
+            inner._current_positions_cache = {
+                k: float(v) for k, v in actual.items() if k.endswith(".pos")
+            }
         precise_sleep(1 / fps)
 
 
@@ -324,6 +328,11 @@ def build_rollout_context(
     logger.info("Robot connected: %s", robot.name)
 
     # Store the initial joint positions so we can return to a safe pose on shutdown.
+    # Warm up: discard the first few readings which are often anomalous
+    # (serial port not yet stable, servo feedback not settled).
+    for _ in range(5):
+        robot.get_observation()
+        precise_sleep(0.02)
     initial_obs = robot.get_observation()
     initial_position = {k: v for k, v in initial_obs.items() if k.endswith(".pos")}
     logger.info("Captured initial robot position (%d keys)", len(initial_position))

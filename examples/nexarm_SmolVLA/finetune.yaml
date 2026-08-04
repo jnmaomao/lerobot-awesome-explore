@@ -1,22 +1,20 @@
-# NexArm SmolVLA finetune config
-# Dataset: nexarm_smolvla/clean (49 episodes, 29303 frames)
+# NexArm SmolVLA 训练配置
+# Dataset: nexarm_smolvla/merged (110 episodes, 82177 frames)
+# 含静止状态样本 20 episodes
 #
-# Usage (两种方式):
-#   方式1 - YAML 配置 + CLI path 参数:
+# Usage:
+#   单卡:
 #     python -m lerobot.scripts.lerobot_train_yaml \
-#       --config_path=examples/nexarm_SmolVLA/finetune.yaml \
-#       --policy.path=lerobot/smolvla_base
+#       --config_path=examples/nexarm_SmolVLA/finetune.yaml
 #
-#   方式2 - 纯 CLI 参数:
-#     lerobot-train \
-#       --dataset.repo_id=local/nexarm_smolvla_clean \
-#       --dataset.root=/home/kingpoint/kp_robot/nexarm_finish_zip/finsh/datasets/nexarm_smolvla/clean \
-#       --policy.path=lerobot/smolvla_base \
-#       --steps=18320 --batch_size=16
+#   双卡:
+#     torchrun --nproc_per_node=2 \
+#       -m lerobot.scripts.lerobot_train_yaml \
+#       --config_path=examples/nexarm_SmolVLA/finetune.yaml
 
 dataset:
-  repo_id: local/nexarm_smolvla_clean
-  root: /home/kingpoint/kp_robot/nexarm_finish_zip/finsh/datasets/nexarm_smolvla/clean
+  repo_id: local/nexarm_smolvla_merged
+  root: datasets/nexarm_smolvla/merged
 
 policy:
   type: smolvla
@@ -24,7 +22,7 @@ policy:
   chunk_size: 50
   n_action_steps: 50
   # --- Vision encoder ---
-  freeze_vision_encoder: true       # 冻结 vision encoder，与 train_expert_only 逻辑一致
+  freeze_vision_encoder: true        # 保持冻结，train_expert_only 模式
   # --- Expert training ---
   train_expert_only: true
   train_state_proj: true
@@ -33,23 +31,24 @@ policy:
   # --- Decoding ---
   num_steps: 10
   # --- Optimizer ---
-  optimizer_lr: 5.0e-5              # 从 1e-4 降低，保护预训练权重
+  optimizer_lr: 5.0e-5
   optimizer_weight_decay: 1.0e-10
   optimizer_grad_clip_norm: 10
   # --- Scheduler ---
-  scheduler_warmup_steps: 300       # finetune 不需要长 warmup，300 步足够
-  scheduler_decay_steps: 18320
-  scheduler_decay_lr: 1.0e-6        # 终止 lr ≈ 初始 lr 的 2%（5e-5 × 2%）
+  scheduler_warmup_steps: 500        # 数据量更大，warmup 从300延长到500
+  scheduler_decay_steps: 50000
+  scheduler_decay_lr: 1.0e-6
+  use_amp: false                     
   push_to_hub: false
 
-output_dir: outputs/train/nexarm_smolvla_finetune
-job_name: nexarm_smolvla_finetune
+output_dir: outputs/train/nexarm_smolvla_finetune_merged
+job_name: nexarm_smolvla_finetune_merged
 seed: 1000
 batch_size: 16
-steps: 18320
-save_freq: 3000                     # 共约 6 个 checkpoint，粒度合理
+steps: 50000
+save_freq: 2000                      # 共4个中间checkpoint
 log_freq: 100
-eval_freq: 99999                    # nexarm 无评估环境，训练后单独推理验证
+eval_freq: 99999                     # 无仿真环境，跳过eval
 
 wandb:
   enable: false

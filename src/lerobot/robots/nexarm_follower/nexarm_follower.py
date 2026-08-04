@@ -118,6 +118,17 @@ class NexArmFollower(Robot):
         self.bus.connect()
         self.bus.enter_lerobot_mode()
 
+        # Warm-up: discard initial frames that may contain stale/zero data.
+        # After enter_lerobot_mode() the AT32 co-processor needs a few cycles
+        # to start reporting real servo positions.  Without this, the first
+        # read_positions() can return values near 0 (boundary anomaly).
+        for _ in range(5):
+            try:
+                self.bus.read_positions()
+            except TimeoutError:
+                pass
+            time.sleep(0.02)
+
         if calibrate and not self.is_calibrated:
             self.calibrate()
         elif self.calibration_fpath.is_file() and not self.calibration:
@@ -224,14 +235,16 @@ class NexArmFollower(Robot):
             dt_ms = (time.perf_counter() - start) * 1e3
             logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
 
-        # Update position cache for use in send_action() relative limit
-        self._current_positions_cache = {
-            f"{name}.pos": float(positions[i]) for i, name in enumerate(JOINT_NAMES)
-        }
-
         # State anomaly detection and recovery
         if self.config.state_safety_margin > 0:
             obs_dict = self._validate_and_recover_state(obs_dict)
+
+        # Cache current positions for use in send_action() relative limit.
+        # This MUST happen after anomaly recovery so that send_action() uses the
+        # recovered (valid) positions, not the raw anomalous ones.
+        # _validate_and_recover_state() also updates the cache when it replaces
+        # values, but we set it here unconditionally so normal frames are cached too.
+        self._current_positions_cache = {k: v for k, v in obs_dict.items() if k.endswith(".pos")}
 
         return obs_dict
 
@@ -294,6 +307,11 @@ class NexArmFollower(Robot):
         Detects extreme boundary values (likely from drop-packet errors) and
         replaces them with the last valid state. Tracks consecutive anomalies
         and triggers a severe warning when threshold is exceeded.
+
+        When recovery replaces joint values, the position cache
+        (``_current_positions_cache``) is also updated so that
+        ``send_action()`` clamps relative to the *recovered* positions,
+        not the raw anomalous ones.
         """
         margin = self.config.state_safety_margin
         pos_min = POSITION_MIN + margin
@@ -345,10 +363,53 @@ class NexArmFollower(Robot):
             for key in obs:
                 if key not in recovered_obs:
                     recovered_obs[key] = obs[key]
-            return recovered_obs
         else:
-            logger.warning("No valid state cache available, using center positions as fallback")
-            fallback_obs = obs.copy()
-            for name in JOINT_NAMES:
-                fallback_obs[f"{name}.pos"] = float(POSITION_CENTER)
-            return fallback_obs
+            # No valid cache yet — re-read from hardware instead of using
+            # center positions.  Center (2048) is NOT the robot's actual
+            # position; using it poisons _current_positions_cache and causes
+            # ensure_safe_goal_position to clamp subsequent moves to wildly
+            # wrong targets (e.g. shoulder_lift clamped to 500 instead of 2370).
+            logger.warning(
+                "No valid state cache available — re-reading from hardware"
+            )
+            for _retry in range(3):
+                try:
+                    positions = self.bus.read_positions()
+                    retry_obs = {f"{name}.pos": float(positions[i]) for i, name in enumerate(JOINT_NAMES)}
+                    # Check if the retry produced valid values
+                    retry_anomalous = any(
+                        v < pos_min or v > pos_max
+                        for v in retry_obs.values()
+                    )
+                    if not retry_anomalous:
+                        recovered_obs = obs.copy()
+                        for name in JOINT_NAMES:
+                            recovered_obs[f"{name}.pos"] = retry_obs[f"{name}.pos"]
+                        break
+                except Exception:
+                    pass
+            else:
+                # All retries failed or still anomalous — fall back to center
+                # but log prominently so the user knows the cache is unreliable
+                logger.warning(
+                    "Hardware re-read still anomalous after 3 retries — "
+                    "falling back to center positions.  move_to_start_position "
+                    "may produce incorrect clamping!"
+                )
+                recovered_obs = obs.copy()
+                for name in JOINT_NAMES:
+                    recovered_obs[f"{name}.pos"] = float(POSITION_CENTER)
+
+        # Keep _current_positions_cache in sync with recovered values
+        # so that send_action() clamps relative to the *recovered* positions,
+        # not the raw anomalous ones.  Without this, a first-frame anomaly
+        # (e.g. raw ≈ 0) would cause ensure_safe_goal_position to compute
+        # wildly wrong clamps (e.g. goal 2050 clamped to 500).
+        if self._current_positions_cache is None:
+            self._current_positions_cache = {}
+        for name in JOINT_NAMES:
+            key = f"{name}.pos"
+            if key in recovered_obs:
+                self._current_positions_cache[key] = recovered_obs[key]
+
+        return recovered_obs

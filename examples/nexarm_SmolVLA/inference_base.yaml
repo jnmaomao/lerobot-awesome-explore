@@ -1,5 +1,5 @@
 # NexArm SmolVLA inference config - Base strategy (pure inference, no recording)
-# Usage: python -m lerobot.scripts.lerobot_rollout --config_path=examples/nexarm_SmolVLA/inference_base.yaml --policy.path=outputs/train/nexarm_smolvla_finetune/checkpoints/015000/pretrained_model
+# Usage: python -m lerobot.scripts.lerobot_rollout --config_path=examples/nexarm_SmolVLA/inference_base.yaml --policy.path=outputs/train/nexarm_smolvla_finetune_merged/checkpoints/044000/pretrained_model
 #
 # Base strategy: pure inference without data recording
 # - No dataset dependency, no encoding pressure, stable USB bus
@@ -8,7 +8,7 @@
 
 robot:
   type: nexarm_follower
-  port: /dev/ttyUSB0          # Follower (slave) ESP32 serial port
+  port: /dev/ttyUSB0         # Follower (slave) ESP32 serial port
                        # Windows: COM19  |  Linux: /dev/ttyUSB1  |  macOS: /dev/tty.usbserial-120
   baudrate: 1000000
   disable_torque_on_disconnect: false   # 保持力矩，防止重力下垂导致下次 connect 跳变
@@ -27,16 +27,17 @@ robot:
   max_relative_target: 500
 
   # ===== Training Start Position =====
-  # 训练数据 49 个 episode 首帧的关节位置均值
+  # 训练数据 110 个 episode 首帧的关节位置均值
+  # 由 scripts/compute_safe_rest_positions.py 计算
   # 推理前机器人从 safe position (2048) 缓慢移动到此位置，
   # 确保起始状态在训练分布内，避免首帧 action chunk 输出错误方向
   safe_rest_positions:
-    shoulder_pan.pos: 2051
-    shoulder_lift.pos: 2317
-    elbow_flex.pos: 1687
-    wrist_flex.pos: 2609
-    wrist_roll.pos: 2022
-    gripper.pos: 1673
+    shoulder_pan.pos: 2082
+    shoulder_lift.pos: 2370
+    elbow_flex.pos: 1664
+    wrist_flex.pos: 2296
+    wrist_roll.pos: 2054
+    gripper.pos: 1690
 
   cameras:
     front:
@@ -57,11 +58,11 @@ robot:
 strategy:
   type: base                  # 纯推理，不录制数据
 
-fps: 20
+fps: 30
 duration: 30
 move_to_start_position: true            # 推理前缓慢移动到训练起始位（safe_rest_positions）
 return_to_initial_position: true        # 推理结束后归位到训练起始位，保持力矩不下垂
 device: cuda
-task: "pick up the object"
+task: "Put blue cube in cup"
 display_data: false
 play_sounds: false

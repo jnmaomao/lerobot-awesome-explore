@@ -190,16 +190,17 @@ class RolloutStrategy(abc.ABC):
                 interp = {}
                 for k in current_pos:
                     interp[k] = current_pos[k] * (1 - t) + target[k] * t
-                robot.send_action(interp)
-                # Update the position cache so the next send_action() uses
-                # the correct present_pos for ensure_safe_goal_position.
-                # Without this, the cache stays stale (only updated by
-                # get_observation()) and the growing delta triggers
-                # spurious safety-clamp warnings.
-                # Access the inner robot when wrapped by ThreadSafeRobot.
+                actual = robot.send_action(interp)
+                # Update the position cache with the *actual* positions returned by
+                # send_action (which may differ from the interpolation intent due to
+                # ensure_safe_goal_position clamping).  Using the clamped values
+                # ensures the next step's relative-movement limit is computed from
+                # the robot's real position, not from an unreachable intent.
                 inner = getattr(robot, "inner", robot)
                 if hasattr(inner, "_current_positions_cache"):
-                    inner._current_positions_cache = {k: float(v) for k, v in interp.items()}
+                    inner._current_positions_cache = {
+                        k: float(v) for k, v in actual.items() if k.endswith(".pos")
+                    }
                 precise_sleep(1 / fps)
         except Exception as e:
             logger.warning("Could not return to initial position: %s", e)
