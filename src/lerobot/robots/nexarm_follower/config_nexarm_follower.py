@@ -39,5 +39,17 @@ class NexArmFollowerConfig(RobotConfig):
     state_safety_margin: int = 100
     max_consecutive_anomalies: int = 5
     max_relative_target: float | dict[str, float] = 500.0
+
+    # First-frame damper: smooths the transition from idle to active inference.
+    # When the gap between last get_observation() and send_action() exceeds
+    # first_frame_gap_threshold_s AND the positional delta exceeds
+    # first_frame_min_delta, the damper activates for first_frame_warmup_frames
+    # ticks, linearly ramping the execution factor from 0.1 to 1.0.
+    # This prevents the "spasm" caused by the first action after a long
+    # inference delay (e.g. ~556ms for SmolVLA's initial forward pass).
+    first_frame_gap_threshold_s: float = 0.2
+    first_frame_min_delta: int = 50
+    first_frame_warmup_frames: int = 15
+
     # cameras
     cameras: dict[str, CameraConfig] = field(default_factory=dict)

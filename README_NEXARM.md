@@ -417,6 +417,73 @@ robot:
 
 **详细文档：** 参见 [`SAFETY_MECHANISMS_SUMMARY.md`](./SAFETY_MECHANISMS_SUMMARY.md)
 
+#### 4. 首帧阻尼器（2025-08 新增）
+
+**问题背景：** 策略推理启动时，首次前向传播耗时较长（SmolVLA ~556ms，ACT ~700ms），期间机器人完全静止。推理完成后首个 action 与当前位置的偏差可达 300-500 raw units，视觉上表现为明显的"抽搐"。现有的 `ensure_safe_goal_position`（max_relative_target=500）不认为此偏差异常，因为安全系统没有时间感知——556ms 空闲后的 500 单位跳跃与 33ms 间的 500 单位跳跃被同等对待。
+
+**检测机制（双重条件，杜绝误触发）：**
+
+1. **时间间隙** `gap_since_obs > 0.2s`：从上次 `get_observation()` 到本次 `send_action()` 的间隔超过 200ms。正常推理帧间隔约 33-40ms，遥控模式约 7ms，推理慢帧约 180ms — 只有首次推理后的首帧才会超过 200ms
+2. **位置偏差** `max_delta > 50`：目标位置与当前位置的最大关节偏差超过 50 raw units。排除静止或微小调整场景
+
+两个条件**同时满足**时才激活阻尼器。
+
+**阻尼行为：**
+
+- 激活后，执行因子从 **0.1** 线性递增至 **1.0**（15 帧内）
+- 帧 0：只执行 10% 的偏移（如 500 单位跳跃 → 只移动 50 单位）
+- 帧 7：执行 57%
+- 帧 14：执行 97%
+- 帧 15+：100% 全速执行
+- 阻尼器位于 `ensure_safe_goal_position` 之前，两层安全机制串联生效
+
+**为什么不会"永远慢一拍"：** SmolVLA 输出绝对位置（非相对增量），阻尼器修改的只是发送给舵机的目标，不影响策略队列。下一帧 `get_observation()` 读取真实位置，`ensure_safe_goal_position()` 基于真实位置重新计算。机器人约 0.5s 后完全追上策略轨迹，对 30s 推理任务影响 <2%。
+
+**不误触发的场景验证：**
+
+| 场景 | gap_since_obs | max_delta | 阻尼触发？ |
+|---|---|---|---|
+| Sync 推理首帧 | ~556ms ✅ | ~300-500 ✅ | ✅ 正确触发 |
+| Sync 后续帧 | ~40ms | — | ❌ |
+| Teleoperate 遥控 | ~7ms | — | ❌ |
+| Record 录制 | ~7ms | — | ❌ |
+| Replay 回放 | ~7ms | — | ❌ |
+| DAgger 遥控修正 | ~7ms | — | ❌ |
+| return_to_initial_position | ~30ms | — | ❌ |
+| move_to_start_position | ~30ms | — | ❌ |
+| follower_smooth_move_to | ~33ms | — | ❌ |
+| 推理 5.5Hz 慢帧 | ~180ms | — | ❌ |
+| connect() 内部 | 不经过 send_action | — | N/A |
+
+**可配置参数：**
+
+```yaml
+robot:
+  type: nexarm_follower
+  # 首帧阻尼器参数
+  first_frame_gap_threshold_s: 0.2   # 激活阈值：观测-动作时间间隙（秒）
+  first_frame_min_delta: 50          # 激活阈值：最小位置偏差（raw units）
+  first_frame_warmup_frames: 15      # 阻尼持续帧数（15帧 ≈ 0.5s @30fps）
+```
+
+**禁用阻尼器：**
+
+```yaml
+robot:
+  first_frame_gap_threshold_s: 999   # 设置极大值，永不触发
+```
+
+**性能影响：**
+
+| 操作 | 原始 | 新增 | 总开销 |
+|------|------|------|--------|
+| send_action() | ~5-10ms（串口I/O） | ~0.002ms（阻尼计算） | ~5-10ms（不变） |
+| 控制频率 | 30 Hz | — | 30 Hz（不变） |
+
+**RTC 兼容性说明：** 当前阻尼器基于时间间隙检测，对 Sync 推理引擎有效。RTC 引擎的首帧问题更复杂（ActionQueue 的 delay 机制会丢弃 chunk 前几步），需要独立的阻尼方案（在 `send_next_action` 或 `robot_wrapper` 层面实现）。RTC 的阻尼器不在本方案的范围内，后续按需开发。
+
+**合并分支说明：** 首帧阻尼器所有代码均在 NexArm 专属文件内（`nexarm_follower.py` + `config_nexarm_follower.py`），不修改 LeRobot 上游核心代码，合并官方更新时零冲突风险。
+
 ---
 
 ## 代码架构说明

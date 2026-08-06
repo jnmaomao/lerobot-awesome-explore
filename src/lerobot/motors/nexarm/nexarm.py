@@ -249,10 +249,15 @@ class NexArmMotorsBus:
         time.sleep(0.02)
 
     def enter_lerobot_mode(self) -> None:
-        """Enter LeRobot bridge mode on slave ESP32 (CMD 68)."""
+        """Enter LeRobot bridge mode on slave ESP32 (CMD 68).
+
+        The AT32 co-processor needs time to initialize its servo bus after
+        receiving the bridge-mode command.  500ms ensures the first
+        read_positions() after warm-up returns real values instead of zeros.
+        """
         frame = build_frame(SYSTEM_ID, CMD_LEROBOT_MODE, bytes([1]))
         self._send(frame, expect_reply=False)
-        time.sleep(0.1)
+        time.sleep(0.5)
 
     def exit_lerobot_mode(self) -> None:
         """Exit LeRobot bridge mode on slave ESP32 (CMD 68)."""
