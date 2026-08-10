@@ -26,6 +26,18 @@ robot:
   # Default: 500 (~12% of full range [0, 4095]). Set to 4095 to disable.
   max_relative_target: 500
 
+  # ===== First-Frame Damper =====
+  # Prevents the "spasm" on the first action after a long inference delay
+  # (e.g. ~556ms for SmolVLA's initial forward pass). Dual-condition activation:
+  # 1. gap_since_obs > threshold (time since last observation)
+  # 2. max_delta > min_delta (positional change magnitude)
+  # When both conditions are met, the execution factor ramps from 0.1 to 1.0
+  # over first_frame_warmup_frames ticks.
+  # To disable: set first_frame_gap_threshold_s to a very large value (e.g. 999)
+  first_frame_gap_threshold_s: 0.2   # seconds; normal frames <0.04s, first frame ~0.55s
+  first_frame_min_delta: 50          # raw units; filters out tiny/noise movements
+  first_frame_warmup_frames: 15      # ticks to full speed (~0.5s @30fps)
+
   # ===== Training Start Position =====
   # 训练数据 110 个 episode 首帧的关节位置均值
   # 由 scripts/compute_safe_rest_positions.py 计算
@@ -35,7 +47,7 @@ robot:
     shoulder_pan.pos: 2082
     shoulder_lift.pos: 2370
     elbow_flex.pos: 1664
-    wrist_flex.pos: 2296
+    wrist_flex.pos: 2505
     wrist_roll.pos: 2054
     gripper.pos: 1690
 
@@ -59,7 +71,7 @@ strategy:
   type: base                  # 纯推理，不录制数据
 
 fps: 30
-duration: 30
+duration: 35
 move_to_start_position: true            # 推理前缓慢移动到训练起始位（safe_rest_positions）
 return_to_initial_position: true        # 推理结束后归位到训练起始位，保持力矩不下垂
 device: cuda

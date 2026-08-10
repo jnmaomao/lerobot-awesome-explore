@@ -50,7 +50,7 @@ dataset:
   fps: 30
   video: true
   streaming_encoding: false  # 关闭 streaming，避免编码器初始化阻塞控制循环
-  vcodec: h264_nvenc         # episode 结束后 GPU 批量编码，RTX 5060 完全够用
+  vcodec: h264                 # CPU 软编码（RTX 5060 Blackwell NVENC 需 ffmpeg ≥7.1，当前 6.1.1 不支持）
   push_to_hub: false
   root: /home/kingpoint/kp_robot/nexarm_finish_zip/finsh/datasets/0715_40   # 指定你想要的路径
 

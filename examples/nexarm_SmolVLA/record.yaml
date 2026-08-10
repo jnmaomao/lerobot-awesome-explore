@@ -46,17 +46,18 @@ teleop:
   baudrate: 1000000
 
 dataset:
-  repo_id: local/nexarm_pick
-  single_task: "pick up the object"
+  repo_id: local/put_blue_cube_in_cup
+  single_task: "Put blue cube in cup"
   num_episodes: 10
-  episode_time_s: 25
-  reset_time_s: 20
+  episode_time_s: 35
+  reset_time_s: 30
   fps: 30                  # 与摄像头帧率匹配（video6 仅支持 30fps）
   video: true
   streaming_encoding: false  # 流式编码在 USB 2.0 环境下会导致 GPU DMA 与 USB 争总线，串口写超时崩溃
-  vcodec: h264_nvenc         # episode 结束后 GPU 批量编码，RTX 5060 完全够用
+  rgb_encoder:
+    vcodec: h264                # CPU 软编码（RTX 5060 Blackwell NVENC 需 ffmpeg ≥7.1，当前 6.1.1 不支持）
   push_to_hub: false
-  root: /home/kingpoint/kp_robot/nexarm_finish_zip/finsh/datasets/nexarm_smolvla/0727_test_led   # 指定你想要的路径
+  root: /home/kingpoint/kp_robot/nexarm_finish_zip/lerobot-awesome-explore/datasets/nexarm_smolvla/put_blue_cube_in_cup_100/   # 指定你想要的路径
 
 display_data: false
 play_sounds: false

@@ -1,0 +1,78 @@
+# NexArm ACT inference config - Base strategy (pure inference, no recording)
+# Usage: python -m lerobot.scripts.lerobot_rollout --config_path=examples/nexarm_act/inference_base.yaml --policy.path=outputs/train/nexarm_act/checkpoints/100000/pretrained_model
+#
+# Base strategy: pure inference without data recording
+# - No dataset dependency, no encoding pressure, stable USB bus
+# - Recommended for model evaluation and deployment
+# - Safe for USB 2.0 environments (no streaming_encoding conflicts)
+
+robot:
+  type: nexarm_follower
+  port: /dev/ttyUSB0         # Follower (slave) ESP32 serial port
+                       # Windows: COM19  |  Linux: /dev/ttyUSB1  |  macOS: /dev/tty.usbserial-120
+  baudrate: 1000000
+  disable_torque_on_disconnect: false   # 保持力矩，防止重力下垂导致下次 connect 跳变
+
+  # ===== Safety Parameters =====
+  # State anomaly detection: values within this margin from 0 or 4095 are considered
+  # drop-packet errors. Set to 0 to disable. Default: 100 (safe range [100, 3995])
+  state_safety_margin: 100
+
+  # Consecutive anomaly threshold: log severe warning when exceeded
+  # Default: 5 frames (~0.17s at 30 FPS)
+  max_consecutive_anomalies: 5
+
+  # Maximum relative movement per step: prevents sudden jerky motions
+  # Default: 500 (~12% of full range [0, 4095]). Set to 4095 to disable.
+  max_relative_target: 500
+
+  # ===== First-Frame Damper =====
+  # Prevents the "spasm" on the first action after a long inference delay.
+  # ACT's initial forward pass is faster than SmolVLA (~50ms vs ~556ms),
+  # but the first-frame gap can still exceed the threshold due to model
+  # loading and torch compilation warm-up.
+  # To disable: set first_frame_gap_threshold_s to a very large value (e.g. 999)
+  first_frame_gap_threshold_s: 0.2   # seconds; normal frames <0.04s
+  first_frame_min_delta: 50          # raw units; filters out tiny/noise movements
+  first_frame_warmup_frames: 10      # ticks to full speed (~0.33s @30fps; shorter than SmolVLA's 15)
+
+  # ===== Training Start Position =====
+  # 训练数据 100 个 episode 首帧的关节位置均值
+  # 由 scripts/compute_safe_rest_positions.py 计算
+  # 推理前机器人从 safe position (2048) 缓慢移动到此位置，
+  # 确保起始状态在训练分布内，避免首帧 action chunk 输出错误方向
+  safe_rest_positions:
+    shoulder_pan.pos: 2090
+    shoulder_lift.pos: 2364
+    elbow_flex.pos: 1678
+    wrist_flex.pos: 2505
+    wrist_roll.pos: 2042
+    gripper.pos: 1704
+
+  cameras:
+    front:
+      type: opencv
+      index_or_path: 6
+      width: 640
+      height: 480
+      fps: 30                  # video6 硬件仅支持 30fps
+      fourcc: MJPG           # MJPG 压缩，带宽 ~0.5 MB/s
+    wrist:
+      type: opencv
+      index_or_path: 4
+      width: 640
+      height: 480
+      fps: 30                  # 与 front 保持一致
+      fourcc: MJPG           # 尝试 MJPG（video4 仅支持 YUYV，会自动回退）
+
+strategy:
+  type: base                  # 纯推理，不录制数据
+
+fps: 30
+duration: 60
+move_to_start_position: true            # 推理前缓慢移动到训练起始位（safe_rest_positions）
+return_to_initial_position: true        # 推理结束后归位到训练起始位，保持力矩不下垂
+device: cuda
+task: "Put blue cube in cup"
+display_data: false
+play_sounds: false

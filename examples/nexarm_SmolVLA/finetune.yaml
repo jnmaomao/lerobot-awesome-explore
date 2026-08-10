@@ -1,6 +1,6 @@
 # NexArm SmolVLA 训练配置
-# Dataset: nexarm_smolvla/merged (110 episodes, 82177 frames)
-# 含静止状态样本 20 episodes
+# Dataset: nexarm_smolvla_merged/train (100 episodes, 104615 frames)
+# Eval:    nexarm_smolvla_merged/eval (10 episodes, 10464 frames) — 独立测试集，用于部署后评估
 #
 # Usage:
 #   单卡:
@@ -13,8 +13,8 @@
 #       --config_path=examples/nexarm_SmolVLA/finetune.yaml
 
 dataset:
-  repo_id: local/nexarm_smolvla_merged
-  root: datasets/nexarm_smolvla/merged
+  repo_id: local/nexarm_smolvla_train
+  root: datasets/nexarm_smolvla_merged/train
 
 policy:
   type: smolvla
@@ -35,8 +35,8 @@ policy:
   optimizer_weight_decay: 1.0e-10
   optimizer_grad_clip_norm: 10
   # --- Scheduler ---
-  scheduler_warmup_steps: 500        # 数据量更大，warmup 从300延长到500
-  scheduler_decay_steps: 50000
+  scheduler_warmup_steps: 500        # 数据量充足，warmup 保持500
+  scheduler_decay_steps: 100000
   scheduler_decay_lr: 1.0e-6
   use_amp: false                     
   push_to_hub: false
@@ -45,10 +45,10 @@ output_dir: outputs/train/nexarm_smolvla_finetune_merged
 job_name: nexarm_smolvla_finetune_merged
 seed: 1000
 batch_size: 16
-steps: 50000
-save_freq: 2000                      # 共4个中间checkpoint
+steps: 100000                         # 100 episodes 充足，10 epochs ≈ 13077 steps/epoch
+save_freq: 10000                      # 共10个中间checkpoint
 log_freq: 100
-eval_freq: 99999                     # 无仿真环境，跳过eval
+env_eval_freq: 99999                     # 无仿真环境，跳过eval
 
 wandb:
   enable: false
