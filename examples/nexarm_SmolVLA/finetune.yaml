@@ -21,6 +21,12 @@ policy:
   # --- Action chunking ---
   chunk_size: 50
   n_action_steps: 50
+  # --- VLM backbone ---
+  # 必须加载预训练 VLM 权重：freeze_vision_encoder=true 时若 load_vlm_weights=false，
+  # 冻结的是一个随机初始化的 vision encoder，感知能力被废掉（见 modeling_smolvla.py 的告警）。
+  # load_vlm_weights=true 确保 vision/language 部分使用 SmolVLM2 预训练特征。
+  vlm_model_name: HuggingFaceTB/SmolVLM2-500M-Video-Instruct
+  load_vlm_weights: true          # 加载预训练 VLM 权重，配合下面的 freeze_vision_encoder
   # --- Vision encoder ---
   freeze_vision_encoder: true        # 保持冻结，train_expert_only 模式
   # --- Expert training ---
@@ -38,7 +44,7 @@ policy:
   scheduler_warmup_steps: 500        # 数据量充足，warmup 保持500
   scheduler_decay_steps: 100000
   scheduler_decay_lr: 1.0e-6
-  use_amp: false                     
+  use_amp: true                     # AMP 混合精度，提升训练速度，同等时间内迭代更多
   push_to_hub: false
 
 output_dir: outputs/train/nexarm_smolvla_finetune_merged

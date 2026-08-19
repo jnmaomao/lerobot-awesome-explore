@@ -26,7 +26,8 @@ policy:
   train_state_proj: true
   # --- VLM backbone ---
   vlm_model_name: HuggingFaceTB/SmolVLM2-500M-Video-Instruct
-  load_vlm_weights: false         # False = train expert from scratch; True = init from pretrained SmolVLA
+  load_vlm_weights: true          # 加载预训练 VLM 权重；配合 freeze_vision_encoder=false 时 encoder 带预训练特征继续微调
+  # 详见 modeling_smolvla.py 的告警：load_vlm_weights=false 从零训练效果差
   # --- Image preprocessing ---
   resize_imgs_with_padding: [512, 512]
   # --- Decoding ---
@@ -39,6 +40,7 @@ policy:
   scheduler_warmup_steps: 1000
   scheduler_decay_steps: 54945
   scheduler_decay_lr: 2.5e-6
+  use_amp: true                    # AMP 混合精度，提升训练速度，同等时间内迭代更多
   push_to_hub: false
 
 output_dir: outputs/train/nexarm_smolvla
