@@ -1,0 +1,48 @@
+# NexArm teleoperation config (for Pi0-FAST data collection)
+# Usage: lerobot-teleoperate --config_path=examples/nexarm_pi0fast/teleoperate.yaml
+# Note: Teleoperation is policy-agnostic — this config is identical to the ACT / SmolVLA version.
+#       The same recorded dataset can be used to train ACT, SmolVLA, and Pi0-FAST.
+
+robot:
+  type: nexarm_follower
+  port: /dev/ttyUSB0          # Follower (slave) ESP32 serial port
+                       # Windows: COM19  |  Linux: /dev/ttyUSB1  |  macOS: /dev/tty.usbserial-120
+  baudrate: 1000000
+
+  # ===== Safety Parameters =====
+  # State anomaly detection: values within this margin from 0 or 4095 are considered
+  # drop-packet errors. Set to 0 to disable. Default: 100 (safe range [100, 3995])
+  state_safety_margin: 100
+
+  # Consecutive anomaly threshold: log severe warning when exceeded
+  # Default: 5 frames (~0.17s at 30 FPS)
+  max_consecutive_anomalies: 5
+
+  # Maximum relative movement per step: prevents sudden jerky motions
+  # Default: 500 (~12% of full range [0, 4095]). Set to 4095 to disable.
+  max_relative_target: 500
+
+  cameras:
+    front:
+      type: opencv
+      index_or_path: 6
+      width: 640
+      height: 480
+      fps: 30                  # video6 硬件仅支持 30fps
+      fourcc: MJPG           # MJPG 压缩，带宽 ~0.5 MB/s
+    wrist:
+      type: opencv
+      index_or_path: 4
+      width: 640
+      height: 480
+      fps: 30                  # 与 front 保持一致
+      fourcc: MJPG           # 尝试 MJPG（video4 仅支持 YUYV，会自动回退）
+
+teleop:
+  type: nexarm_leader
+  port: /dev/ttyUSB1          # Leader (master) ESP32 serial port
+                       # Windows: COM18  |  Linux: /dev/ttyUSB0  |  macOS: /dev/ttyserial-110
+  baudrate: 1000000
+
+display_data: true
+fps: 30

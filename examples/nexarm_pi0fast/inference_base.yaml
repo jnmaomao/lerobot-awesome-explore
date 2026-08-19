@@ -1,0 +1,82 @@
+# NexArm Pi0-FAST inference config - Base strategy (pure inference, no recording)
+# Usage: lerobot-rollout --config_path=examples/nexarm_pi0fast/inference_base.yaml \
+#   --policy.path=outputs/train/nexarm_pi0fast/checkpoints/080000/pretrained_model
+#
+# Base strategy: pure inference without data recording
+# - No dataset dependency, no encoding pressure, stable USB bus
+# - Recommended for model evaluation and deployment on RTX 5060 8GB
+#
+# 显存：训练用 bf16 → checkpoint ~4.6GB，加载后 + KV-cache + 激活 ~6GB，5060 8GB 舒适。
+# 推理时 policy.dtype=bfloat16 为安全网：即使 checkpoint 是 fp32 也会强制转 bf16。
+
+robot:
+  type: nexarm_follower
+  port: /dev/ttyUSB0         # Follower (slave) ESP32 serial port
+                       # Windows: COM19  |  Linux: /dev/ttyUSB1  |  macOS: /dev/tty.usbserial-120
+  baudrate: 1000000
+  disable_torque_on_disconnect: false   # 保持力矩，防止重力下垂导致下次 connect 跳变
+
+  # ===== Safety Parameters =====
+  state_safety_margin: 100
+  max_consecutive_anomalies: 5
+  max_relative_target: 500
+
+  # ===== First-Frame Damper =====
+  # Pi0-FAST 首帧需建 KV-cache，延迟与 SmolVLA 同量级（~0.5s），首帧动作可能突变。
+  # 双条件激活：gap_since_obs > threshold 且 max_delta > min_delta 时，
+  # 执行系数从 0.1 经 warmup_frames 帧爬升到 1.0。
+  # 禁用：把 first_frame_gap_threshold_s 设为很大值（如 999）
+  first_frame_gap_threshold_s: 0.2   # seconds; normal frames <0.04s, first frame ~0.5s
+  first_frame_min_delta: 50          # raw units; 过滤微小/噪声运动
+  first_frame_warmup_frames: 15      # ticks 到全速（~0.5s @30fps）
+
+  # ===== Training Start Position =====
+  # 训练数据 episode 首帧关节位置均值（由 scripts/compute_safe_rest_positions.py 计算）
+  # 推理前从 safe position (2048) 缓慢移动到此位置，确保起始状态在训练分布内。
+  # 若使用复用的 nexarm_smolvla/clean 数据集，沿用其均值；自采数据请重新计算。
+  safe_rest_positions:
+    shoulder_pan.pos: 2082
+    shoulder_lift.pos: 2370
+    elbow_flex.pos: 1664
+    wrist_flex.pos: 2505
+    wrist_roll.pos: 2054
+    gripper.pos: 1690
+
+  cameras:
+    front:
+      type: opencv
+      index_or_path: 6
+      width: 640
+      height: 480
+      fps: 30                  # video6 硬件仅支持 30fps
+      fourcc: MJPG           # MJPG 压缩，带宽 ~0.5 MB/s
+    wrist:
+      type: opencv
+      index_or_path: 4
+      width: 640
+      height: 480
+      fps: 30                  # 与 front 保持一致
+      fourcc: MJPG           # 尝试 MJPG（video4 仅支持 YUYV，会自动回退）
+
+# 策略：纯推理，不录制数据
+strategy:
+  type: base
+
+# Pi0-FAST 推理参数（通过 rollout 的 policy yaml_overrides 合并到 --policy.path 加载的 config）
+# use_kv_cache=true 默认开启，自回归解码 256 token 不重复计算。
+# rtc_config 保持 None：base strategy 走 select_action，启用 RTC 会触发 assert。
+policy:
+  type: pi0_fast
+  dtype: bfloat16
+  use_kv_cache: true
+  max_decoding_steps: 256
+  temperature: 0.0             # 0 = 贪心解码，确定性输出
+
+fps: 30
+duration: 120
+move_to_start_position: true            # 推理前缓慢移动到训练起始位（safe_rest_positions）
+return_to_initial_position: true        # 推理结束后归位，保持力矩不下垂
+device: cuda
+task: "Put blue cube in cup"            # 必须与训练时 single_task 一致
+display_data: false
+play_sounds: false

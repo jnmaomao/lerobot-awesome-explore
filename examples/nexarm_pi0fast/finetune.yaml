@@ -1,0 +1,62 @@
+# NexArm Pi0-FAST 二阶段微调配置 — 从已训练的 NexArm Pi0-FAST checkpoint 继续微调
+#
+# 与 train.yaml 的区别：
+#   train.yaml    → 从官方基座 lerobot/pi0fast-base 开始（首次训练入口）
+#   finetune.yaml → 从你自己的 NexArm Pi0-FAST checkpoint 继续迭代（数据扩充后二次微调）
+#
+# ⚠️ 必须通过 --policy.path 传入 checkpoint，否则 pretrained_path=None → 随机初始化（无预训练加载）。
+#   lerobot_train_yaml 不会自动从 output_dir 推断 checkpoint，--policy.path 是唯一注入方式。
+#
+# Usage:
+#   python -m lerobot.scripts.lerobot_train_yaml \
+#     --config_path=examples/nexarm_pi0fast/finetune.yaml \
+#     --policy.path=outputs/train/nexarm_pi0fast/checkpoints/080000/pretrained_model
+#
+# 双卡（如有多卡服务器）:
+#   torchrun --nproc_per_node=2 -m lerobot.scripts.lerobot_train_yaml \
+#     --config_path=examples/nexarm_pi0fast/finetune.yaml \
+#     --policy.path=outputs/train/nexarm_pi0fast/checkpoints/080000/pretrained_model
+
+dataset:
+  repo_id: local/nexarm_smolvla_train
+  root: datasets/nexarm_smolvla_merged/train
+
+policy:
+  type: pi0_fast
+
+  # ===== 二阶段微调起点 =====
+  # --policy.path 优先；此处仅作文档说明，实际注入靠命令行 --policy.path。
+  # pretrained_path: outputs/train/nexarm_pi0fast/checkpoints/080000/pretrained_model
+
+  dtype: bfloat16
+  device: cuda
+  gradient_checkpointing: true
+
+  chunk_size: 10
+  n_action_steps: 10
+  max_action_tokens: 256
+
+  # 二阶段用更小学习率，避免灾难性遗忘
+  optimizer_lr: 5.0e-6
+  optimizer_betas: [0.9, 0.95]
+  optimizer_eps: 1.0e-8
+  optimizer_weight_decay: 0.01
+  optimizer_grad_clip_norm: 1.0
+
+  scheduler_warmup_steps: 500
+  scheduler_decay_steps: 100000
+  scheduler_decay_lr: 1.0e-6
+
+  push_to_hub: false
+
+output_dir: outputs/train/nexarm_pi0fast_finetune
+job_name: nexarm_pi0fast_finetune
+seed: 1000
+batch_size: 16                       # 二阶段数据充足，5090 32GB 可用更大 batch
+steps: 100000
+save_freq: 10000
+log_freq: 100
+env_eval_freq: 99999
+
+wandb:
+  enable: false
