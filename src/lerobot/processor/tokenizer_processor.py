@@ -376,9 +376,20 @@ class ActionTokenizerProcessorStep(ActionProcessorStep):
         elif self.action_tokenizer_name is not None:
             if AutoProcessor is None:
                 raise ImportError("AutoProcessor is not available")
-            self.action_tokenizer = AutoProcessor.from_pretrained(
-                self.action_tokenizer_name, trust_remote_code=self.trust_remote_code
-            )
+            try:
+                self.action_tokenizer = AutoProcessor.from_pretrained(
+                    self.action_tokenizer_name, trust_remote_code=self.trust_remote_code
+                )
+            except Exception:
+                # Fallback for transformers 5.x: ProcessorMixin.from_pretrained
+                # requires a tokenizer.json that the fast-action-tokenizer repo
+                # does not ship. Build UniversalActionProcessor manually.
+                # See _fast_action_tokenizer_compat.py (local patch, not upstream).
+                from ._fast_action_tokenizer_compat import load_fast_action_processor
+
+                self.action_tokenizer = load_fast_action_processor(
+                    self.action_tokenizer_name, self.trust_remote_code
+                )
         else:
             raise ValueError(
                 "Either 'action_tokenizer' or 'action_tokenizer_name' must be provided. "
