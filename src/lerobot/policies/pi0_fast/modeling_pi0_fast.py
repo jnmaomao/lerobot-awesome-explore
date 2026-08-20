@@ -740,9 +740,23 @@ class PI0FastPolicy(PreTrainedPolicy):
         # Load tokenizers first
         try:
             # Load FAST tokenizer
-            self.action_tokenizer = AutoProcessor.from_pretrained(
-                config.action_tokenizer_name, trust_remote_code=True
-            )
+            try:
+                self.action_tokenizer = AutoProcessor.from_pretrained(
+                    config.action_tokenizer_name, trust_remote_code=True
+                )
+            except Exception:
+                # Fallback for transformers 5.x: ProcessorMixin.from_pretrained
+                # recursively loads the sub-tokenizer via PreTrainedConfig, which
+                # requires a config.json that the fast-action-tokenizer repo does
+                # not ship. Build UniversalActionProcessor manually instead.
+                # See lerobot.processor._fast_action_tokenizer_compat (local patch).
+                from ...processor._fast_action_tokenizer_compat import (
+                    load_fast_action_processor,
+                )
+
+                self.action_tokenizer = load_fast_action_processor(
+                    config.action_tokenizer_name, trust_remote_code=True
+                )
 
             # Load PaliGemma tokenizer for token conversion
             self._paligemma_tokenizer = AutoTokenizer.from_pretrained(
