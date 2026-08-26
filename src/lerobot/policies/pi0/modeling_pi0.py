@@ -771,9 +771,72 @@ class PI0Policy(PreTrainedPolicy):
         if config.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
 
-        self.model.to(config.device)
+        # When weight-only quantization is requested, keep the model on CPU here so that
+        # from_pretrained can load the 8.3GB state dict into CPU RAM (loading straight to
+        # cuda OOMs on 8GB cards) and quantize on CPU before moving to the target device.
+        # The quantization="none" path preserves the original .to(device) behavior.
+        if getattr(config, "quantization", "none") == "none":
+            self.model.to(config.device)
 
         self.reset()
+
+    def _apply_weight_only_quantization(self):
+        """Apply torchao weight-only int8 quantization to the PI0 backbone.
+
+        Only the bf16 Linear layers of the PaliGemma language model and Gemma action
+        expert are quantized (~6.7GB -> ~3.4GB). The following are explicitly skipped
+        to preserve numerical fidelity (aligned with `to_bfloat16_for_selected_params`):
+          - vision_tower (SigLIP, kept fp32)
+          - multi_modal_projector (kept fp32)
+          - per-layer input_layernorm / post_attention_layernorm (kept fp32)
+          - model.norm (final, kept fp32)
+          - embed_tokens / lm_head (token representations, not quantized)
+          - PI0Pytorch action_in_proj / action_out_proj / state_proj / action_time_mlp
+            (small action-side projections, kept as-is)
+
+        Must be called after `load_state_dict` and before `to(device)` so quantization
+        runs on CPU (torchao recommendation for int8 weight-only).
+
+        Note: torchao 0.18 deprecated the callable filter_fn form of `quantize_`. We
+        iterate modules explicitly and quantize each eligible Linear with
+        `Int8WeightOnlyConfig()` (the per-module form validated on sm_120).
+        """
+        cfg = self.config
+        if getattr(cfg, "quantization", "none") != "int8wo":
+            return
+
+        from torchao.quantization import quantize_, Int8WeightOnlyConfig
+
+        # Substrings that mark modules to keep unquantized (see to_bfloat16_for_selected_params).
+        skip_substrings = (
+            "vision_tower",
+            "multi_modal_projector",
+            "input_layernorm",
+            "post_attention_layernorm",
+            "model.norm",
+            "embed_tokens",
+            "lm_head",
+            "action_in_proj",
+            "action_out_proj",
+            "state_proj",
+            "action_time_mlp",
+        )
+        quant_cfg = Int8WeightOnlyConfig()
+
+        candidates = [
+            (name, mod) for name, mod in self.model.named_modules()
+            if isinstance(mod, nn.Linear)
+            and mod.weight.dtype == torch.bfloat16
+            and not any(s in name for s in skip_substrings)
+        ]
+        total_linear = sum(1 for m in self.model.modules() if isinstance(m, nn.Linear))
+        print(
+            f"Applying torchao int8 weight-only quantization "
+            f"({len(candidates)}/{total_linear} bf16 Linear layers will be quantized)..."
+        )
+        for name, mod in candidates:
+            quantize_(mod, quant_cfg)
+        print("int8 quantization applied.")
 
     @classmethod
     def from_pretrained(
@@ -890,6 +953,15 @@ class PI0Policy(PreTrainedPolicy):
 
         except Exception as e:
             print(f"Warning: Could not load state dict: {e}")
+
+        # Weight-only quantization runs on CPU after weights are loaded and before the
+        # model is moved to the target device. Kept OUTSIDE the try/except above so that
+        # quantization or device-move failures surface instead of being swallowed.
+        if getattr(config, "quantization", "none") != "none":
+            model._apply_weight_only_quantization()
+            target_device = config.device or "cuda"
+            print(f"Moving quantized model to device: {target_device}")
+            model.to(target_device)
 
         return model
 

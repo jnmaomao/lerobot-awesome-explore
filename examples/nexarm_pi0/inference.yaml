@@ -1,0 +1,85 @@
+# NexArm Pi0 (flow) inference config - Sentry strategy (inference with recording)
+# Usage:
+#   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True HF_HUB_OFFLINE=1 \
+#   python -m lerobot.scripts.lerobot_rollout \
+#     --config_path=examples/nexarm_pi0/inference.yaml \
+#     --policy.path=outputs/train/nexarm_pi0/checkpoints/<step>/pretrained_model \
+#     --policy.quantization=int8wo \
+#     --policy.gradient_checkpointing=false --policy.use_amp=false --use_torch_compile=false
+#   5060 8GB 必加 --policy.quantization=int8wo（详见 inference_base.yaml 顶部量化说明）。
+#
+# Sentry strategy: continuous inference with data recording
+# - WARNING: Sentry forces streaming_encoding=true (code override, rollout/configs.py:290-296)
+# - USB 2.0 + HUB 环境下 GPU DMA 与 USB 争总线，可能 SerialTimeoutException
+# - 纯推理（无录制）请用 inference_base.yaml
+#
+# flow 版速度说明见 inference_base.yaml 顶部。录制会增加 USB/CPU 压力，
+# 若出现丢帧警告，优先用 inference_base.yaml 评估策略本身。
+
+robot:
+  type: nexarm_follower
+  port: /dev/ttyUSB0          # Follower (slave) ESP32 serial port
+                       # Windows: COM19  |  Linux: /dev/ttyUSB1  |  macOS: /dev/tty.usbserial-120
+  baudrate: 1000000
+  disable_torque_on_disconnect: true    # 断开时松力矩，安全选项
+
+  # ===== Safety Parameters =====
+  state_safety_margin: 100
+  max_consecutive_anomalies: 5
+  max_relative_target: 500
+
+  # ===== First-Frame Damper =====
+  first_frame_gap_threshold_s: 0.2
+  first_frame_min_delta: 50
+  first_frame_warmup_frames: 15
+
+  safe_rest_positions:
+    shoulder_pan.pos: 2082
+    shoulder_lift.pos: 2370
+    elbow_flex.pos: 1664
+    wrist_flex.pos: 2505
+    wrist_roll.pos: 2054
+    gripper.pos: 1690
+
+  cameras:
+    front:
+      type: opencv
+      index_or_path: 6
+      width: 640
+      height: 480
+      fps: 30
+      fourcc: MJPG
+    wrist:
+      type: opencv
+      index_or_path: 4
+      width: 640
+      height: 480
+      fps: 30
+      fourcc: MJPG
+
+strategy:
+  type: sentry
+
+dataset:
+  repo_id: rollout_nexarm_pi0
+  single_task: "Put blue cube in cup"
+  fps: 30
+  video: true
+  push_to_hub: false
+  streaming_encoding: true   # Sentry 强制设为 true（此行会被代码覆盖，仅作文档说明）
+
+# Pi0 (flow) 推理参数
+# ⚠️ yaml policy 段在 --policy.path 经 CLI 传入时被忽略，须 CLI 覆盖（见 Usage）。
+policy:
+  type: pi0
+  dtype: bfloat16
+  num_inference_steps: 10
+
+fps: 30
+duration: 30
+move_to_start_position: true
+return_to_initial_position: false       # 禁用归位，保持推理最后一帧姿态
+device: cuda
+task: "Put blue cube in cup"
+display_data: false
+play_sounds: false

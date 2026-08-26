@@ -1,0 +1,145 @@
+# NexArm Pi0 (flow) inference config - Base strategy (pure inference, no recording)
+# Usage:
+#   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True HF_HUB_OFFLINE=1 \
+#   python -m lerobot.scripts.lerobot_rollout \
+#     --config_path=examples/nexarm_pi0/inference_base.yaml \
+#     --policy.path=outputs/train/nexarm_pi0/checkpoints/<step>/pretrained_model \
+#     --policy.quantization=int8wo \
+#     --policy.gradient_checkpointing=false --policy.use_amp=false --use_torch_compile=false
+#                                                      
+#   5060 8GB 必加 --policy.quantization=int8wo（见下方说明）；大显存机器可省略。
+#
+# Base strategy: pure inference without data recording
+# - No dataset dependency, no encoding pressure, stable USB bus
+# - Recommended for model evaluation and deployment on RTX 5060 8GB
+#
+# ===== 为什么 flow 版能流畅（对比 Pi0-FAST）=====
+#   Pi0-FAST: 自回归解码 256 token，每 token 重读一遍 ~6GB 权重 → 5060 上 ~6s/chunk → ~1.7fps（不可用）
+#   Pi0 flow: flow-matching 仅 10 步去噪（num_inference_steps），每步一次完整前向；
+#             chunk_size=50 一次生成 50 步动作 → 5060 上单 chunk ~0.3-0.5s → 可持续 30fps（控制环上限）
+#   杠杆：前向次数 256→10（25x），chunk 10→50（5x），带宽利用率提升 ~125x。
+#   flow 版无自回归 KV-cache，激活不随步数线性增长，峰值显存与 FAST 同量级（~7-7.5GB）。
+#
+# 显存：训练用 bf16 → checkpoint ~4.6GB，加载后 + flow 激活 ~6-7GB，5060 8GB 可行（余量小，须按下方环境变量）。
+# 推理时 policy.dtype=bfloat16 为安全网：即使 checkpoint 是 fp32 也会强制转 bf16。
+#
+# ===== 运行前必设环境变量（RTX 5060 8GB / 离线机器）=====
+#   export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True   # 抑制显存碎片，否则前向时差几十 MB OOM
+#   export HF_HUB_OFFLINE=1                                    # 强制走本地 HF 缓存，避免联网超时
+#                                                             # 需预缓存: lerobot/pi0_base,
+#                                                             #          google/paligemma-3b-pt-224
+#
+# ===== 关键推理开关（必须 CLI 覆盖，见 Usage）=====
+#   --policy.gradient_checkpointing=false   推理关 gc（与 test_load_5060.py 一致）
+#   --policy.use_amp=false                  bf16 模型上 autocast 是纯开销：会把 act_fn/elementwise 提升到
+#                                          fp32，激活体积翻倍，8GB 卡上前向易差几十 MB OOM。务必关。
+#   --use_torch_compile=false               8GB 不要开 torch.compile，编译图额外占显存。
+#   （与 Pi0-FAST 调通的三件套完全相同。flow 版激活更小，理论上比 FAST 更不易 OOM。）
+#
+# ===== int8 weight-only 量化（5060 8GB 必需，2025-08 新增）=====
+#   问题：4090 训练产物 model.safetensors ~8.3GB（bf16 语言塔 + fp32 视觉塔/layernorm 混合精度），
+#         5060 总显存 ~8GB，扣 Xorg 后原始权重直接加载必然 OOM（连权重都放不下）。
+#   方案：路径 A —— 运行时 torchao int8 weight-only 量化。
+#         from_pretrained 在 CPU 上加载 8.3GB 权重 → 对 bf16 Linear 做 int8 量化（~6.7GB→~4.3GB）
+#         → 搬到 cuda。跳过 vision_tower/multi_modal_projector/layernorm/proj/lm_head（保原精度）。
+#   代价：每次 startup 量化 252 层约数十秒；int8 相对误差 ~0.5%，对 VLA 推理无实质影响。
+#   产物：不改变 checkpoint 文件格式，--policy.path 仍指向原 bf16 checkpoint。
+#   实测（test_load_pi0_int8_5060.py）：峰值 6.29GB，单 chunk 生成 p95 ~400ms，可持续 125fps。
+#
+#   --policy.quantization=int8wo            【5060 必加】开启 int8 weight-only 量化
+#   （4090/48GB 等大显存机器可省略此参数，走 quantization=none 原始 bf16 路径。）
+#
+# ===== 环境依赖（int8 量化路径）=====
+#   pip install torchao==0.18.0              # 配 torch 2.11；int8 kernel 在 sm_120(Blackwell) 已验证
+#   依赖修复：diffusers 0.35.2 + torchao 0.18 有一个 logger 加载顺序 bug，会导致 import lerobot
+#   时 NameError。已对环境内 diffusers/quantizers/torchao/torchao_quantizer.py 打补丁（logger 提前定义）。
+#   详见 README_NEXARM.md「Pi0 int8 量化部署」章节。
+#   int4 路径暂不可用：torchao 0.18 的 Int4WeightOnlyConfig 在 sm_120 上 tinygemm kernel 报
+#   Requires mslk >= 1.0.0，需额外装 mslk，稳定性未知，故默认走 int8。
+
+robot:
+  type: nexarm_follower
+  port: /dev/ttyUSB0         # Follower (slave) ESP32 serial port
+                       # Windows: COM19  |  Linux: /dev/ttyUSB1  |  macOS: /dev/tty.usbserial-120
+  baudrate: 1000000
+  disable_torque_on_disconnect: false   # 保持力矩，防止重力下垂导致下次 connect 跳变
+
+  # ===== Safety Parameters =====
+  state_safety_margin: 100
+  max_consecutive_anomalies: 5
+  max_relative_target: 500
+
+  # ===== First-Frame Damper =====
+  # flow 版首帧需跑完整 10 步去噪，延迟 ~0.3-0.5s（比 FAST 的 ~0.5s 略好），首帧动作可能突变。
+  # 双条件激活：gap_since_obs > threshold 且 max_delta > min_delta 时，
+  # 执行系数从 0.1 经 warmup_frames 帧爬升到 1.0。
+  # 禁用：把 first_frame_gap_threshold_s 设为很大值（如 999）
+  first_frame_gap_threshold_s: 0.2   # seconds; normal frames <0.04s, first frame ~0.4s
+  first_frame_min_delta: 50          # raw units; 过滤微小/噪声运动
+  first_frame_warmup_frames: 15      # ticks 到全速（~0.5s @30fps）
+
+  # ===== Training Start Position =====
+  # 训练数据 episode 首帧关节位置均值（由 scripts/compute_safe_rest_positions.py 计算）
+  # 推理前从 safe position (2048) 缓慢移动到此位置，确保起始状态在训练分布内。
+  # 若使用复用的 nexarm_smolvla/clean 数据集，沿用其均值；自采数据请重新计算。
+  safe_rest_positions:
+    shoulder_pan.pos: 2082
+    shoulder_lift.pos: 2370
+    elbow_flex.pos: 1664
+    wrist_flex.pos: 2505
+    wrist_roll.pos: 2054
+    gripper.pos: 1690
+
+  cameras:
+    front:
+      type: opencv
+      index_or_path: 6
+      width: 640
+      height: 480
+      fps: 30                  # video6 硬件仅支持 30fps
+      fourcc: MJPG           # MJPG 压缩，带宽 ~0.5 MB/s
+    wrist:
+      type: opencv
+      index_or_path: 4
+      width: 640
+      height: 480
+      fps: 30                  # 与 front 保持一致
+      fourcc: MJPG           # 尝试 MJPG（video4 仅支持 YUYV，会自动回退）
+
+# 策略：纯推理，不录制数据
+strategy:
+  type: base
+
+# Pi0 (flow) 推理参数
+# ⚠️ 重要：当 --policy.path 通过 CLI 传入时，本 yaml 的 policy: 段整体被忽略
+#   （parser.extract_path_fields_from_config 仅在 policy 段含 path 键时才扁平化为
+#    cli overrides）。因此 dtype/num_inference_steps/gradient_checkpointing 等字段
+#    必须用 CLI --policy.xxx=value 覆盖，写在 yaml 里无效。
+#   下方值仅作文档说明，真实生效值来自 checkpoint 的 config.json，可用 CLI 覆盖。
+#
+# flow 版关键参数（与 FAST 不同，无 use_kv_cache/max_decoding_steps/temperature）：
+#   num_inference_steps=10   flow 去噪步数，决定速度/质量权衡。
+#                           5060 带宽受限，如需更快可 CLI 降到 --policy.num_inference_steps=4
+#                           （简单任务 4 步通常够，再快 ~2.5x）。
+#   chunk_size=50 / n_action_steps=50  一次生成并执行 50 步动作（~1.67s @30fps）。
+#   quantization=int8wo      5060 8GB 必加（CLI: --policy.quantization=int8wo），运行时 int8 weight-only
+#                           量化，8.3GB 权重 → 峰值 6.29GB。大显存机器用 none 走原始 bf16。
+# rtc_config 保持 None：base strategy 走 select_action，启用 RTC 会触发 assert。
+policy:
+  type: pi0
+  dtype: bfloat16          # 生效需 CLI: --policy.dtype=bfloat16 （config.json 已是 bf16，可不传）
+  num_inference_steps: 10  # 5060 慢时可 CLI: --policy.num_inference_steps=4 加速
+  # 以下项 yaml 不生效，须 CLI 覆盖：
+  #   --policy.quantization=int8wo             (5060 必设，int8 weight-only 量化)
+  #   --policy.gradient_checkpointing=false    (必设，推理关 gc)
+  #   --policy.use_amp=false                   (必设，关 autocast 省 fp32 激活)
+  #   --policy.compile_model=false             (8GB 不要开 torch.compile)
+
+fps: 30
+duration: 120
+move_to_start_position: true            # 推理前缓慢移动到训练起始位（safe_rest_positions）
+return_to_initial_position: true        # 推理结束后归位，保持力矩不下垂
+device: cuda
+task: "Put blue cube in cup"            # 必须与训练时 single_task 一致
+display_data: false
+play_sounds: false

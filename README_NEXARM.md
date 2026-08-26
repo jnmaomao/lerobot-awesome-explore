@@ -15,6 +15,7 @@ NexArm 是一款基于 ESP32 + AT32F421 协处理器的高性能 6 自由度桌�
   - [录制状态灯（可选）](#录制状态灯可选)
 - [第五步：训练策略模型](#第五步训练策略模型)
 - [第六步：策略推理部署](#第六步策略推理部署)
+  - [Pi0 int8 量化部署（RTX 5060 8GB）](#pi0-int8-量化部署rtx-5060-8gb2025-08-新增)
 - [代码架构说明](#代码架构说明)
 - [PR 提交指南](#pr-提交指南)
 - [常见问题排查](#常见问题排查)
@@ -486,6 +487,99 @@ robot:
 
 ---
 
+### Pi0 int8 量化部署（RTX 5060 8GB，2025-08 新增）
+
+**问题背景：** Pi0 (flow) 在 4090 上训练产物 `model.safetensors` 约 **8.3GB**，这是混合精度：bf16 语言塔+action expert（~6.7GB）+ fp32 视觉塔/layernorm/proj（~1.6GB，由 `to_bfloat16_for_selected_params` 强制保留）。RTX 5060 Laptop 总显存 ~8GB，扣 Xorg 后原始权重直接加载 **必然 OOM**——连权重都放不下，更别提 flow 去噪激活。
+
+> 对比：ACT/SmolVLA 权重小，5060 可直接加载；Pi0-FAST 7.2GB 勉强能跑；**Pi0 flow 8.3GB 必须量化**。
+
+**方案选型（路径 A：运行时 weight-only 量化）：**
+
+| 路径 | 在哪量化 | 精度 | 复杂度 | 采用 |
+|------|---------|------|--------|------|
+| A. 运行时 torchao int8wo | 5060 加载后 | 与离线一致（weight-only RTN 与硬件无关） | 低，不改 checkpoint | ✅ |
+| B. 4090 离线量化产物 | 4090 | 同 A | 高，需自定义 int4/int8 序列化 loader | ❌ |
+| C. 4090 GPTQ/AWQ 激活感知 | 4090 | 更好 | 很高，换工具链 | 备选（仅 A 精度不达标时） |
+
+> 关键事实：weight-only RTN 量化（torchao `int8_weight_only`）是确定性操作，只看权重数值分布，**不需要校准数据/前向 pass**。因此在 4090 上量化和在 5060/CPU 上量化得到的 int8 权重数值完全相同——"更好硬件→更好量化"是误解，只对激活感知量化（GPTQ/AWQ）才成立。
+
+**实现（3 处改动 + 1 个测试文件，均在 NexArm 专属范围内）：**
+
+1. `src/lerobot/policies/pi0/configuration_pi0.py`：`PI0Config` 加 `quantization: str = "none"`（取值 `none`|`int8wo`）+ `__post_init__` 校验。
+2. `src/lerobot/policies/pi0/modeling_pi0.py`：
+   - `__init__`：开启量化时跳过 `self.model.to(config.device)`，让模型留在 CPU，使 `from_pretrained` 能把 8.3GB 权重加载进 CPU RAM（直接上 cuda 会 OOM）。
+   - 新增 `_apply_weight_only_quantization()`：用 `torchao.quantization.quantize_` + `Int8WeightOnlyConfig()`，**逐模块**量化 bf16 Linear（252 层），跳过 `vision_tower`/`multi_modal_projector`/`layernorm`/`model.norm`/`embed_tokens`/`lm_head`/`action_*_proj`/`state_proj`/`action_time_mlp`。
+   - `from_pretrained`：`load_state_dict` 后调用量化，再 `model.to(device)`。量化+搬运放在 `try/except` 之外，让错误暴露。
+3. `test_load_pi0_int8_5060.py`：基于 `test_load_5060.py` 改写，验证量化层数/峰值 VRAM/数值正确性/延迟吞吐。
+4. 原文件已备份为 `*.quant_backup_<时间戳>`。
+
+> torchao 0.18 API 变更：废弃了 callable `filter_fn` 形式的 `quantize_`，改为逐模块 `quantize_(linear, Int8WeightOnlyConfig())`。
+
+**环境搭建关键点：**
+
+```bash
+# 1. 安装量化依赖（唯一必需包，配 torch 2.11）
+pip install torchao==0.18.0
+```
+
+```bash
+# 2. 【必须】修复 diffusers 0.35.2 + torchao 0.18 的 logger 加载顺序 bug
+#    否则 import lerobot.policies 时 NameError（任何策略 import 都崩，非仅 Pi0）
+#    症状: name 'logger' is not defined @ diffusers/quantizers/torchao/torchao_quantizer.py
+#    原因: torchao 0.18 移除了 NF4Tensor，触发 diffusers 的 except 分支，
+#          而该分支引用的 logger 定义在调用之后。
+#    修复: 把 logger = logging.get_logger(__name__) 提到 _update_torch_safe_globals() 之前。
+#    已对环境内该文件打补丁并备份为 .bak_<时间戳>。升级 diffusers (>=0.36) 也可解决。
+```
+
+```bash
+# 3. 可忽略的 torchao 警告（不影响 int8 量化）：
+#    - _C_cutlass_90a.abi3.so 加载失败 → Hopper(sm_90a) 专用，Blackwell 用不到
+#    - _C_mxfp8.cpython-310-...so 加载失败 → wheel 里混进的 py3.10 编译产物，与 py3.12 不符
+#    - "Unable to import torchao Tensor objects" → 同上，仅影响 torchao 序列化 checkpoint 加载，本方案不涉及
+```
+
+```bash
+# 4. int4 暂不可用：torchao 0.18 的 Int4WeightOnlyConfig 在 sm_120(Blackwell) 上
+#    tinygemm kernel 报 Requires mslk >= 1.0.0，需额外装 mslk，稳定性未知。
+#    int8 已足够（峰值 6.29GB），故默认走 int8。
+```
+
+**验证命令与实测结果：**
+
+```bash
+cd lerobot-awesome-explore
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export HF_HUB_OFFLINE=1
+python test_load_pi0_int8_5060.py
+```
+
+| 指标 | 实测值 | 判定 |
+|------|--------|------|
+| 量化层数 | 252/422 bf16 Linear | 视觉塔/layernorm 正确跳过 |
+| 量化后权重 | Int8Tensor 4.27GB + bf16 2.45GB + fp32 1.56GB | — |
+| **峰值 VRAM** | **6.29 GB** | PASS（8GB 卡留 1.7GB 余量） |
+| 单 chunk 生成 (p95) | 400 ms | 10 步去噪，~40ms/step |
+| **可持续控制 fps** | **125 fps** | 远超 30fps 控制需求 |
+| int8 相对误差 | ~0.5% | 对 VLA 推理无实质影响 |
+
+**真实推理部署命令（5060）：**
+
+```bash
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True HF_HUB_OFFLINE=1 \
+python -m lerobot.scripts.lerobot_rollout \
+  --config_path=examples/nexarm_pi0/inference_base.yaml \
+  --policy.path=outputs/train/nexarm_pi0/checkpoints/040000/pretrained_model \
+  --policy.quantization=int8wo \
+  --policy.gradient_checkpointing=false --policy.use_amp=false --use_torch_compile=false
+```
+
+> `--policy.quantization=int8wo` 是 5060 必加项（`inference_base.yaml` 的 policy 段在 `--policy.path` 传入时被忽略，必须 CLI）。4090/48GB 等大显存机器可省略，走 `quantization=none` 原始 bf16 路径。
+
+**质量验证建议：** int8 量化后首次部署建议对比 bf16（在大显存机器上）的 rollout 成功率。简单任务（放方块入杯）通常无感；若复杂任务精度下降明显，再考虑路径 C（4090 上 GPTQ/AWQ 激活感知量化）。
+
+---
+
 ## 代码架构说明
 
 ### 文件结构
@@ -680,6 +774,13 @@ robot:
 - 确保有足够的示范 episode（建议 50+ 个）
 - 检查数据集中的摄像头画面是否正常（非黑屏/模糊）
 - 尝试提高学习率（如 `--policy.optimizer_lr=1e-4`）
+
+### Pi0 在 5060 上推理 OOM / import lerobot 报 NameError
+
+- **OOM（CUDA out of memory）**：5060 8GB 无法直接加载 8.3GB 的 Pi0 权重，必须加 `--policy.quantization=int8wo`。详见 [Pi0 int8 量化部署](#pi0-int8-量化部署rtx-5060-8gb2025-08-新增)。
+- **import 时 `NameError: name 'logger' is not defined`**：diffusers 0.35.2 + torchao 0.18 的已知 bug，需打补丁（把 `logger` 定义提前）。见量化部署章节「环境搭建关键点」。
+- **torchao 警告 `_C_cutlass_90a`/`_C_mxfp8` 加载失败**：可忽略，不影响 int8 量化核心。
+- **`quantize_` 报 "Passing a generic Callable is no longer recommended"**：torchao 0.18 废弃了 filter_fn 形式，代码已改为逐模块量化。若自行修改请用 `quantize_(linear, Int8WeightOnlyConfig())`。
 
 ### 推理时机械臂犹犹豫豫/动作幅度很小
 

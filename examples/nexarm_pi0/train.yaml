@@ -1,0 +1,84 @@
+# NexArm Pi0 (flow) training config — finetune from lerobot/pi0_base
+#
+# 为什么用 flow 版而不是 Pi0-FAST：
+#   Pi0-FAST 自回归解码在 RTX 5060 上仅 ~1.7fps（带宽受限，不可用）。
+#   Pi0 flow 用 flow-matching 10 步去噪 + chunk_size=50，5060 上预期可持续 30fps。
+#   两者同属 Pi0 家族（PaliGemma 2B + Gemma 300m action expert），数据可完全复用，
+#   仅动作表达不同（flow 连续动作 vs FAST 离散 token）。
+#
+# Pi0 不能从零训练：必须加载预训练 PaliGemma 2B + Gemma 300m action expert 权重。
+# 因此本配置即"微调"入口：pretrained_path 指向 HuggingFace 上的官方基座 lerobot/pi0_base。
+#
+# 训练硬件假设：48GB 显存 GPU（3B 全量 AdamW bf16 需 ~40GB，48GB 充足）。
+# 训练产物为 bf16 权重（~4.6GB），可直接在 RTX 5060 8GB 上推理（flow 版激活更小，比 FAST 更宽松）。
+#
+# Dataset: nexarm_smolvla_train (复用 SmolVLA/Pi0-FAST 已采集数据，含 task 字段)
+#       或自采 local/nexarm_pi0fast（见 record.yaml）
+#
+# Usage:
+#   python -m lerobot.scripts.lerobot_train_yaml --config_path=examples/nexarm_pi0/train.yaml
+#
+# 首次运行会从 HuggingFace 下载:
+#   - lerobot/pi0_base              (~5GB, 含 model.safetensors，注意是下划线 pi0_base)
+#   - google/paligemma-3b-pt-224    (PaliGemma tokenizer)
+# 需联网。如离线，预先 huggingface-cli download 上述仓库到本地缓存。
+# （无需 fast-action-tokenizer，那是 FAST 专属。）
+
+dataset:
+  repo_id: local/nexarm_smolvla_train
+  root: datasets/nexarm_smolvla_merged/train
+
+policy:
+  type: pi0
+
+  # ===== 预训练基座（必填）=====
+  # make_policy 读取 cfg.pretrained_path → 走 from_pretrained 加载 base 权重（非随机初始化）
+  # 注意：lerobot 官方 pi0 flow 基座是 lerobot/pi0_base（下划线），不是 pi0fast-base
+  pretrained_path: lerobot/pi0_base
+
+  # ===== 精度（决定显存与产物 dtype）=====
+  # bfloat16: 模型转 bf16（视觉塔保 fp32），训练产物 ~4.6GB，5060 8GB 可直接推理
+  # float32: 产物 ~9GB，5060 8GB 无法推理 —— 不要用
+  dtype: bfloat16
+  device: cuda
+  gradient_checkpointing: true       # 即使 48GB 也建议开启，省激活内存换更大 batch
+
+  # ===== Action chunking（flow 版默认 50，远大于 FAST 的 10）=====
+  # chunk_size=50 一次预测 50 步动作（~1.67s @30fps），是 flow 版在 5060 上流畅的关键：
+  #   可持续控制 fps = chunk_size / 单chunk生成时间。生成时间 ~0.4s → 50/0.4 ≈ 125fps（被控制环封顶 30）。
+  # 不要降回 10，否则失去 flow 版的带宽优势。
+  chunk_size: 50                     # 预测 50 步动作
+  n_action_steps: 50                 # 执行 50 步
+
+  # ===== Flow matching 参数（推理时也可 CLI 覆盖）=====
+  num_inference_steps: 10            # 去噪步数，10 步为官方默认；5060 推理慢可降到 4
+
+  # ===== 相机 / 状态维度（NexArm 6-DOF，自动 pad 到 32）=====
+  # 视觉塔对所有图像共享同一 SigLIP，相机数量灵活，无需补齐
+  # max_state_dim / max_action_dim 默认 32，6 维自动 pad，无需设置
+
+  # ===== Optimizer（openpi 默认值，与 Pi0-FAST 一致）=====
+  optimizer_lr: 2.5e-5
+  optimizer_betas: [0.9, 0.95]
+  optimizer_eps: 1.0e-8
+  optimizer_weight_decay: 0.01
+  optimizer_grad_clip_norm: 1.0
+
+  # ===== Scheduler（与 steps 对齐，短训练会自动缩放 warmup/decay）=====
+  scheduler_warmup_steps: 1000
+  scheduler_decay_steps: 80000
+  scheduler_decay_lr: 2.5e-6
+
+  push_to_hub: false
+
+output_dir: outputs/train/nexarm_pi0
+job_name: nexarm_pi0
+seed: 1000
+batch_size: 8                        # 48GB + bf16 + gc 安全；显存富余可调 16
+steps: 80000                         # 49 episodes, bs=8 → ~3663 steps/epoch, ≈22 epochs
+save_freq: 10000                     # 共 8 个中间 checkpoint
+log_freq: 100
+env_eval_freq: 99999                 # 无仿真环境，跳过 eval
+
+wandb:
+  enable: false

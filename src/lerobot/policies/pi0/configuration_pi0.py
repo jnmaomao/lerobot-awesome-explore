@@ -32,6 +32,15 @@ class PI0Config(PreTrainedConfig):
     action_expert_variant: str = "gemma_300m"
     dtype: str = "float32"  # Options: "bfloat16", "float32"
 
+    # ===== Weight-only 量化 (仅推理, RTX 5060 8GB 部署用) =====
+    # "none"        : 不量化, 加载原始混合精度权重 (bf16 语言塔 + fp32 视觉塔/layernorm, ~8.3GB, 5060 无法加载)
+    # "int8wo"      : torchao int8 weight-only, 仅量化语言塔+action expert 的 Linear (bf16 部分),
+    #                 跳过 vision_tower / multi_modal_projector / layernorm / proj (强制保 fp32).
+    #                 8.3GB -> 权重 ~3.3GB, 峰值 ~4-5GB, 5060 8GB 稳妥可行. 相对误差 ~0.5%.
+    # 量化在 from_pretrained 的 load_state_dict 之后、to(device) 之前于 CPU 上完成 (torchao 推荐),
+    # 每次 startup 花约 30-60s, 不改变 checkpoint 文件格式.
+    quantization: str = "none"  # Options: "none", "int8wo"
+
     n_obs_steps: int = 1
     chunk_size: int = 50  # Number of action steps to predict, in openpi called "action_horizon"
     n_action_steps: int = 50  # Number of action steps to execute
@@ -119,6 +128,9 @@ class PI0Config(PreTrainedConfig):
 
         if self.dtype not in ["bfloat16", "float32"]:
             raise ValueError(f"Invalid dtype: {self.dtype}")
+
+        if self.quantization not in ["none", "int8wo"]:
+            raise ValueError(f"Invalid quantization: {self.quantization}")
 
     def validate_features(self) -> None:
         """Validate and set up input/output features."""

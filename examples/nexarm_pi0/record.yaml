@@ -1,0 +1,65 @@
+# NexArm dataset recording config (for Pi0 flow training)
+# Usage: lerobot-record --config_path=examples/nexarm_pi0/record.yaml
+# Note: Data collection is policy-agnostic — 与 ACT / SmolVLA / Pi0-FAST 版本一致。
+#       同一份录制数据可同时用于训练 ACT、SmolVLA、Pi0-FAST 和 Pi0(flow)。
+#       如已有 nexarm_smolvla_train 数据，可直接复用，无需重新采集。
+#
+# Pi0 (flow) specific requirement: the language task field is mandatory.
+#   The processor (processor_pi0.py) requires a task string (会自动补换行符)。
+#   `single_task` below populates the dataset's task column → satisfies this requirement.
+
+robot:
+  type: nexarm_follower
+  port: /dev/ttyUSB0          # Follower (slave) ESP32 serial port
+                       # Windows: COM19  |  Linux: /dev/ttyUSB1  |  macOS: /dev/tty.usbserial-120
+  baudrate: 1000000
+  disable_torque_on_disconnect: true    # 断开时松力矩
+
+  # ===== Safety Parameters =====
+  state_safety_margin: 100
+  max_consecutive_anomalies: 5
+  max_relative_target: 500
+
+  cameras:
+    front:
+      type: opencv
+      index_or_path: 6
+      width: 640
+      height: 480
+      fps: 30                  # video6 硬件仅支持 30fps
+      fourcc: MJPG           # MJPG 压缩，带宽 ~0.5 MB/s
+    wrist:
+      type: opencv
+      index_or_path: 4
+      width: 640
+      height: 480
+      fps: 30                  # 与 front 保持一致
+      fourcc: MJPG           # 尝试 MJPG（video4 仅支持 YUYV，会自动回退）
+
+teleop:
+  type: nexarm_leader
+  port: /dev/ttyUSB1          # Leader (master) ESP32 serial port
+                       # Windows: COM18  |  Linux: /dev/ttyUSB0  |  macOS: /dev/ttyserial-110
+  baudrate: 1000000
+
+dataset:
+  repo_id: local/nexarm_pi0
+  single_task: "Put blue cube in cup"   # Pi0 强制要求语言任务字段，不可留空
+  num_episodes: 10
+  episode_time_s: 35
+  reset_time_s: 30
+  fps: 30                  # 与摄像头帧率匹配（video6 仅支持 30fps）
+  video: true
+  streaming_encoding: false  # 流式编码在 USB 2.0 环境下会导致 GPU DMA 与 USB 争总线，串口写超时崩溃
+  rgb_encoder:
+    vcodec: h264                # CPU 软编码（RTX 5060 Blackwell NVENC 需 ffmpeg ≥7.1，当前 6.1.1 不支持）
+  push_to_hub: false
+  root: /home/kingpoint/kp_robot/nexarm_finish_zip/lerobot-awesome-explore/datasets/nexarm_pi0/put_blue_cube_in_cup/   # 指定你想要的路径
+
+display_data: false
+play_sounds: false
+
+# Status lamp (optional): ESP32 + NeoPixel ring that shows recording progress
+# Colors: red=recording, orange=resetting, green=done
+# lamp_port: COM4            # Windows
+# lamp_port: /dev/ttyACM0    # Linux
