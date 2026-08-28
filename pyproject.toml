@@ -70,6 +70,10 @@ dependencies = [
     "draccus==0.10.0", # TODO: Relax version constraint
     "huggingface-hub>=1.0.0,<2.0.0",
     "requests>=2.32.0,<3.0.0",
+    # Remote API inference backend (src/lerobot/rollout/inference/api.py): msgpack
+    # RPC body codec. Imported at top level via inference/__init__.py -> ApiInferenceEngine,
+    # so it is a core dep (not extra-scoped) to avoid ImportError on any rollout use.
+    "msgpack>=1.0.0,<2.0.0",
 
     # Environments
     # NOTE: gymnasium is used in lerobot.envs (lerobot-train, lerobot-eval), policies/factory,
