@@ -33,6 +33,7 @@ from lerobot.policies.rtc.configuration_rtc import RTCConfig
 from lerobot.processor import PolicyProcessorPipeline
 
 from ..robot_wrapper import ThreadSafeRobot
+from .api import ApiInferenceEngine
 from .base import InferenceEngine
 from .rtc import RTCInferenceEngine
 from .sync import SyncInferenceEngine
@@ -72,6 +73,22 @@ class RTCInferenceConfig(InferenceEngineConfig):
     # (e.g. ``--inference.rtc.execution_horizon=...``).
     rtc: RTCConfig = field(default_factory=RTCConfig)
     queue_threshold: int = 30
+
+
+@InferenceEngineConfig.register_subclass("api")
+@dataclass
+class ApiInferenceConfig(InferenceEngineConfig):
+    """Remote API inference: pull action chunks from a GPU inference server.
+
+    模型推理在远端服务器(``server/policy_server.py``)上执行,本地不加载权重、
+    不需要 GPU。客户端按 chunk cadence 发 HTTP/msgpack RPC,本地持有 chunk 队列。
+    详见 ``src/lerobot/rollout/inference/api.py``。
+    """
+
+    server_url: str = "http://127.0.0.1:8000"
+    timeout: float = 5.0
+    # chunk 队列长度(应与 policy 的 n_action_steps 一致;默认 50 对应 pi0)。
+    n_action_steps: int = 50
 
 
 # ---------------------------------------------------------------------------
@@ -124,5 +141,18 @@ def create_inference_engine(
             compile_warmup_inferences=compile_warmup_inferences,
             rtc_queue_threshold=config.queue_threshold,
             shutdown_event=shutdown_event,
+        )
+    if isinstance(config, ApiInferenceConfig):
+        # 远端推理:模型在服务器上,本地不需要 policy/preprocessor/robot_wrapper。
+        # dataset_features / ordered_action_keys 来自机器人硬件(见 context.py:419-437),
+        # 用于把服务器返回的 chunk 重排为机器人 action 顺序。
+        return ApiInferenceEngine(
+            server_url=config.server_url,
+            dataset_features=dataset_features,
+            ordered_action_keys=ordered_action_keys,
+            task=task,
+            n_action_steps=config.n_action_steps,
+            device=device,
+            timeout=config.timeout,
         )
     raise ValueError(f"Unknown inference engine type: {type(config).__name__}")

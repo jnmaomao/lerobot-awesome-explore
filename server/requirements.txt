@@ -1,0 +1,8 @@
+# Pi0 推理 API 服务依赖(服务器侧,部署在 4090 等推理服务器)
+# 服务器还需安装 lerobot 本体(提供 PI0Policy / processor / utils):
+#   pip install -e ".[core_scripts,training]"
+fastapi>=0.110
+uvicorn[standard]>=0.29
+msgpack>=1.0
+opencv-python>=4.8          # JPEG 编解码;lerobot 已依赖,此处显式声明
+# torch / lerobot 由 lerobot 仓库依赖提供,此处不重复声明

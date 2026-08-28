@@ -18,8 +18,10 @@ Concrete backends (``sync``, ``rtc``, ...) expose the same small interface so
 rollout strategies never branch on which backend is in use.
 """
 
+from .api import ApiInferenceEngine
 from .base import InferenceEngine
 from .factory import (
+    ApiInferenceConfig,
     InferenceEngineConfig,
     RTCInferenceConfig,
     SyncInferenceConfig,
@@ -29,6 +31,8 @@ from .rtc import RTCInferenceEngine
 from .sync import SyncInferenceEngine
 
 __all__ = [
+    "ApiInferenceConfig",
+    "ApiInferenceEngine",
     "InferenceEngine",
     "InferenceEngineConfig",
     "RTCInferenceConfig",

@@ -529,7 +529,16 @@ pip install torchao==0.18.0
 #    原因: torchao 0.18 移除了 NF4Tensor，触发 diffusers 的 except 分支，
 #          而该分支引用的 logger 定义在调用之后。
 #    修复: 把 logger = logging.get_logger(__name__) 提到 _update_torch_safe_globals() 之前。
-#    已对环境内该文件打补丁并备份为 .bak_<时间戳>。升级 diffusers (>=0.36) 也可解决。
+#    已对环境内该文件打补丁并备份为 .bak_<时间戳>。
+#
+#    上游状态（2026-08 核实）：已在 diffusers >= 0.37.0 修复。
+#      修复 commit: 1cdb8723b8 "fix torchao quantizer for new torchao versions (#12901)"，2025-12-30 合入。
+#      修法 = 把 logger 提前到模块顶部，与本手动补丁完全一致（非 hack，是官方修法的本地前置应用）。
+#      版本勘误：0.36.0 仍带此 bug（logger 在调用之后）；首个修复版本是 0.37.0，0.38/0.39 同样已修。
+#    是否升级 diffusers？—— 不建议。本环境锁定 torch 2.11+cu128 / torchao 0.18（为 5060 sm_120 专门选定），
+#      升级 diffusers 0.37+ 会带进新 quantizer API 与依赖收紧，在已真机验证的环境里引入回归风险，
+#      仅为 3 行补丁不值。保留 0.35.2 + 补丁，重装环境时跑 scripts/check_patch_diffusers_torchao.py 自动检测/补丁。
+#      若未来 diffusers >= 0.37.0，该脚本会自动判定无需补丁（logger 已在调用前）。
 ```
 
 ```bash
@@ -551,7 +560,7 @@ pip install torchao==0.18.0
 cd lerobot-awesome-explore
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export HF_HUB_OFFLINE=1
-python test_load_pi0_int8_5060.py
+python scripts/test_load_pi0_int8_5060.py
 ```
 
 | 指标 | 实测值 | 判定 |
@@ -580,6 +589,118 @@ python -m lerobot.scripts.lerobot_rollout \
 
 ---
 
+### Pi0-FAST 自回归解码提前终止优化（2026-08 新增）
+
+**问题背景：** Pi0-FAST 用自回归 token 解码生成动作 chunk，`sample_actions_fast_kv_cache` 的解码循环 `for t in range(1, max_decoding_steps)` **固定跑满 256 步**（`max_action_tokens=256`，与训练序列长度对齐）。但 NexArm 6-DOF + chunk_size=10 的实际动作经 FAST 分词后**仅产生 ~12-14 个有效 token**（到 end-of-action marker `|` 即结束），剩余 95% 是无用 padding——每步都要做一次完整 KV-cache 前向，造成巨大浪费。
+
+**实测浪费比例**（真实数据集帧）：
+
+| 输入 | 256 步耗时 | 首个 `\|` 位置 | 有效 token | 浪费 |
+|------|-----------|---------------|-----------|------|
+| zeros 图像 | ~5.6s（5060） | 10 | ~10 | 96% |
+| 真实帧 #0 | ~5.6s | 11 | 12 | 95% |
+| 真实帧 #1500 | ~5.6s | 13 | 14 | 95% |
+
+**为什么官方原版跑满 256：**
+1. `max_action_tokens=256` 是**训练侧固定序列长度契约**，推理对齐保证生成分布一致；
+2. `sample_actions_fast` docstring 自称 *"Inefficient but safe"*——官方明知低效但优先正确性，性能留给 `use_kv_cache` 路径；
+3. `detokenize_actions` 本就按首个 `|` 截断（`token_seq[:index("|")]`）+ `relaxed_decoding=True` 允许 partial——**设计上预留了变长空间**，`|` 之后的 token 无论是什么都被丢弃。这正是优化安全的契约依据；
+4. openpi 主要面向 ALOHA/双臂大动作任务（chunk_size=50），256 步在 A100 上够用；NexArm 小维度 + 短 chunk 才把浪费放大到 95% 成为瓶颈。
+
+**优化方案**（`src/lerobot/policies/pi0_fast/modeling_pi0_fast.py`，已备份 `.bak_20260828_111900`）：
+
+在 `sample_actions_fast_kv_cache` 解码循环内，采样到 `|` 或 `<eos>` token 即标记该行 done、剩余位置填充 `|`（让 `detokenize_actions` 的 `index("|")` 截断仍命中正确边界），全部行 done 则 `break`。`batch_size=1`（推理）时循环在终止符后立即停止，省掉 ~240 步无用前向。
+
+**正确性保证**：
+- `detokenize_actions` 按首个 `|` 截断 → `|` 之后填 `|` 与原版"继续生成垃圾 token"在截断后**完全等价**；
+- `temperature=0` 贪心解码下同输入逐位一致（已验证），与优化前原版输出**逐位一致**（已验证）；
+- 若模型对 OOD 输入不产生 `|`，`done` 一直 False，循环跑满 256 步 → **优雅退化为原版行为，不会更差**；
+- 训练路径走 `forward` loss，不受影响。
+
+**性能实测**（真实数据集帧，`select_action` 完整路径含 pre/post processor）：
+
+| 平台 | 优化前单 chunk | 优化后单 chunk (p95) | 加速 | 可持续控制 fps (p95) |
+|------|--------------|---------------------|------|---------------------|
+| RTX 5060 8GB | 5643ms | 645ms | **10.4x** | 15.5 Hz |
+| RTX 4090 | 6700ms | 527ms | **15.7x** | 22.9 Hz |
+
+**控制频率可行性**（chunk_size=10，回放 10 步）：
+
+| 目标 fps | 单 chunk 预算 | 5060 | 4090 |
+|---------|--------------|------|------|
+| 10 Hz | < 1000ms | ✅ p95=645ms（余量 355ms） | ✅ p95=527ms |
+| 15 Hz | < 667ms | ⚠️ p95=645ms（勉强） | ✅ |
+| 30 Hz | < 333ms | ❌ | ⚠️ 略不足（median 445ms） |
+
+> **结论：** 优化后 5060 单机即可独立运行 Pi0-FAST 支撑 10-15Hz 控制，不再强制依赖 4090；4090 可达 ~23Hz。30Hz 紧密闭环仍略不足——这是 Pi0-FAST 自回归架构的固有特性（逐 token 串行前向），非优化遗留问题。真机部署建议以实际动作平滑度为准：首帧阻尼 + ActionInterpolator 会平滑 RPC 间隔抖动。
+
+**回退方法**：
+```bash
+cd src/lerobot/policies/pi0_fast
+cp modeling_pi0_fast.py.bak_20260828_111900 modeling_pi0_fast.py
+```
+
+---
+
+### 推理 API 边端部署服务（FastAPI + msgpack，2026-08 新增）
+
+把模型推理的重计算部分（Pi0 flow 的 10 步 flow-matching 前向 / Pi0-FAST 的自回归解码，均过 PaliGemma 3B）从本地机器人主机卸载到更强大的推理服务器（如 4090/3090）。本地 LeRobot 继续负责机械臂连接、图像/关节数据采集、控制循环、安全限位与首帧阻尼；通过 HTTP/msgpack 调用远端服务获取动作 chunk。客户端不加载模型权重、不需要 GPU。
+
+**为何 Pi0 系列特别适合 API 化：** 两者都是 chunk-based（一次前向产多步动作），RPC 频率极低（Pi0 flow chunk=50 → ~0.6 次/秒@30fps；Pi0-FAST chunk=10 → ~3 次/秒），网络延迟被 chunk 缓冲 + ActionInterpolator 自然掩盖。
+
+**部署拓扑：**
+
+```
+本地机器人主机 (30fps 控制环, 无 GPU)          推理服务器 (4090/3090, 有 GPU)
+┌─────────────────────────────┐         ┌──────────────────────────┐
+│ robot.get_observation()      │  HTTP   │  PI0/PI0FastPolicy (GPU) │
+│   ↓ JPEG + state + task      │  RPC    │  preprocessor            │
+│   ↓ msgpack (~10KB)          │───────→ │  predict_action_chunk    │
+│   ← chunk (n,6) float32      │←─────── │  postprocessor           │
+│   ↓ deque 缓存逐帧 pop        │         └──────────────────────────┘
+│   ↓ ActionInterpolator + 安全限位 + 写舵机 │
+└─────────────────────────────┘
+```
+
+**服务器按 checkpoint `config.json` 的 `type` 自动 dispatch**（`server/policy_server.py` 的 `_POLICY_REGISTRY`）：`pi0` → `PI0Policy`（支持 `--quantization int8wo`），`pi0_fast` → `PI0FastPolicy`（bf16，不支持量化）。新增 chunk-based policy 只需在注册表追加一行。
+
+**快速启动：**
+
+```bash
+# 推理服务器(4090/3090)
+pip install -e ".[core_scripts,training]" && pip install -r server/requirements.txt
+python server/policy_server.py \
+  --ckpt outputs/train/nexarm_pi0fast/checkpoints/040000/pretrained_model \
+  --host 0.0.0.0 --port 8000
+# Pi0 flow 小显存机器: --quantization int8wo
+
+# 本地机器人主机(无 GPU)
+pip install -e ".[core_scripts]" && pip install msgpack
+python -m lerobot.scripts.lerobot_rollout \
+  --config_path=examples/nexarm_pi0fast/inference_api_client.yaml \
+  --policy.path=outputs/train/nexarm_pi0fast/checkpoints/040000/pretrained_model
+# --policy.path 仅读 config.json 元数据(action 顺序/chunk_size),不加载权重
+```
+
+**API 协议**（`POST /predict`，`application/x-msgpack`）：
+- 请求：`{images: {cam: JPEG bytes}, state: [6 floats], task: str}`
+- 响应：`{chunk: float32 bytes, shape: [n_action_steps, action_dim]}`
+- `GET /health`：`{ready, policy_type, chunk_size, n_action_steps, action_dim, ...}`
+
+**性能（优化后，真实数据）：**
+
+| 模型 | 服务器 | 单 chunk p95 | 可持续 fps | 10Hz | 30Hz |
+|------|-------|-------------|-----------|------|------|
+| Pi0-FAST | 4090 | 527ms | 22.9 Hz | ✅ | ⚠️ |
+| Pi0-FAST | 5060 | 645ms | 15.5 Hz | ✅ | ❌ |
+| Pi0 flow (int8) | 5060 | ~400ms | 125 Hz | ✅ | ✅ |
+
+> Pi0 flow 的 chunk=50 + 10 步去噪前向，API 化对网络延迟高度鲁棒（1.67s 缓冲）；Pi0-FAST chunk=10 缓冲仅 0.33s，对网络抖动更敏感，弱网络下建议确认 RTT < 150ms。
+
+**详细部署指南**见 [`server/DEPLOY.md`](./server/DEPLOY.md)（架构、协议、配置、验证、故障排查）。**相关文件**：`server/policy_server.py`、`src/lerobot/rollout/inference/api.py`（客户端 `ApiInferenceEngine`）、`examples/nexarm_pi0/inference_api_client.yaml`、`examples/nexarm_pi0fast/inference_api_client.yaml`。
+
+---
+
 ## 代码架构说明
 
 ### 文件结构
@@ -598,9 +719,19 @@ src/lerobot/
     ├── __init__.py                         # 导出 NexArmLeader, NexArmLeaderConfig
     ├── config_nexarm_leader.py             # TeleoperatorConfig 子类（端口、波特率）
     └── nexarm_leader.py                    # Teleoperator 子类（读取动作、主从映射）
+├── rollout/inference/
+│   ├── api.py                              # ApiInferenceEngine — 远端 API 推理客户端(chunk 队列+HTTP/msgpack)
+│   └── factory.py                          # 注册 api 引擎类型 + dispatch
+├── policies/pi0_fast/
+│   └── modeling_pi0_fast.py                # Pi0-FAST 解码提前终止优化(见对应章节;备份 .bak_*)
 ├── utils/
 │   ├── status_lamp.py                      # 录制状态灯控制器（ESP32 + NeoPixel）
 │   └── find_lamp_port.py                   # 热插拔检测灯的串口
+
+server/                                     # 推理 API 边端服务(独立于 src/lerobot/)
+├── policy_server.py                        # FastAPI 服务,按 config.json type 自动 dispatch pi0/pi0_fast
+├── requirements.txt                        # fastapi/uvicorn/msgpack/opencv
+└── DEPLOY.md                               # 部署指南
 ```
 
 ### 修改的已有文件
@@ -778,7 +909,7 @@ robot:
 ### Pi0 在 5060 上推理 OOM / import lerobot 报 NameError
 
 - **OOM（CUDA out of memory）**：5060 8GB 无法直接加载 8.3GB 的 Pi0 权重，必须加 `--policy.quantization=int8wo`。详见 [Pi0 int8 量化部署](#pi0-int8-量化部署rtx-5060-8gb2025-08-新增)。
-- **import 时 `NameError: name 'logger' is not defined`**：diffusers 0.35.2 + torchao 0.18 的已知 bug，需打补丁（把 `logger` 定义提前）。见量化部署章节「环境搭建关键点」。
+- **import 时 `NameError: name 'logger' is not defined`**：diffusers 0.35.2 + torchao 0.18 的已知 bug，需打补丁（把 `logger` 定义提前）。上游已在 diffusers ≥ 0.37.0 修复（commit #12901），本环境锁定 0.35.2 故保留补丁。一键检测/打补丁：`python scripts/check_patch_diffusers_torchao.py`。详见量化部署章节「环境搭建关键点」。
 - **torchao 警告 `_C_cutlass_90a`/`_C_mxfp8` 加载失败**：可忽略，不影响 int8 量化核心。
 - **`quantize_` 报 "Passing a generic Callable is no longer recommended"**：torchao 0.18 废弃了 filter_fn 形式，代码已改为逐模块量化。若自行修改请用 `quantize_(linear, Int8WeightOnlyConfig())`。
 

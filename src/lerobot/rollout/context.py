@@ -51,6 +51,7 @@ from lerobot.utils.feature_utils import combine_feature_dicts, hw_to_dataset_fea
 
 from .configs import BaseStrategyConfig, DAggerStrategyConfig, RolloutConfig
 from .inference import (
+    ApiInferenceConfig,
     InferenceEngine,
     RTCInferenceConfig,
     SyncInferenceConfig,
@@ -114,11 +115,16 @@ class HardwareContext:
 
 @dataclass
 class PolicyContext:
-    """Loaded policy and its inference engine."""
+    """Loaded policy and its inference engine.
 
-    policy: PreTrainedPolicy
-    preprocessor: PolicyProcessorPipeline
-    postprocessor: PolicyProcessorPipeline
+    For the remote ``api`` inference backend the policy and pre/post-processors
+    live on the server, so ``policy`` / ``preprocessor`` / ``postprocessor`` are
+    ``None`` and only ``inference`` (the remote engine) is populated.
+    """
+
+    policy: PreTrainedPolicy | None
+    preprocessor: PolicyProcessorPipeline | None
+    postprocessor: PolicyProcessorPipeline | None
     inference: InferenceEngine
 
 
@@ -272,6 +278,7 @@ def build_rollout_context(
     fails fast without touching the robot.
     """
     is_rtc = isinstance(cfg.inference, RTCInferenceConfig)
+    is_api = isinstance(cfg.inference, ApiInferenceConfig)
 
     # --- 1. Policy (heavy I/O, but no hardware yet) -------------------
     logger.info("Loading policy from '%s'...", cfg.policy.pretrained_path)
@@ -286,18 +293,33 @@ def build_rollout_context(
             "Please use `cpu` or `cuda` backend."
         )
 
-    policy = _load_pretrained_policy(policy_config)
+    if is_api:
+        # 远端推理:模型在服务器上,本地不加载权重、不需要 GPU。
+        # cfg.policy 已是 config-only(PreTrainedConfig,读自 config.json),
+        # 足以提供 action_feature_names / input_features / n_action_steps 等元数据。
+        policy = None
+        logger.info(
+            "API inference backend: skipping local policy weight load "
+            "(model runs on remote server %s)", cfg.inference.server_url,
+        )
+    else:
+        policy = _load_pretrained_policy(policy_config)
 
-    if is_rtc:
-        policy.config.rtc_config = cfg.inference.rtc
-        if hasattr(policy, "init_rtc_processor"):
-            policy.init_rtc_processor()
+        if is_rtc:
+            policy.config.rtc_config = cfg.inference.rtc
+            if hasattr(policy, "init_rtc_processor"):
+                policy.init_rtc_processor()
 
-    policy = policy.to(cfg.device)
-    policy.eval()
-    logger.info("Policy loaded: type=%s, device=%s", policy_config.type, cfg.device)
+        policy = policy.to(cfg.device)
+        policy.eval()
+        logger.info("Policy loaded: type=%s, device=%s", policy_config.type, cfg.device)
 
-    if cfg.use_torch_compile and policy.type not in ("pi0", "pi05"):
+    if (
+        not is_api
+        and cfg.use_torch_compile
+        and policy is not None
+        and policy.type not in ("pi0", "pi05")
+    ):
         try:
             if hasattr(torch, "compile"):
                 compile_kwargs = {
@@ -513,6 +535,7 @@ def build_rollout_context(
         logger.info("Dataset ready: %s (%d existing episodes)", dataset.repo_id, dataset.num_episodes)
 
     # --- 6. Policy pre/post processors (needs dataset stats if any) ---
+    # 远端 api 推理:preprocessor/postprocessor 在服务器上,本地跳过加载。
     dataset_stats = None
     if dataset is not None:
         dataset_stats = rename_stats(
@@ -520,25 +543,28 @@ def build_rollout_context(
             cfg.rename_map,
         )
 
-    preprocessor, postprocessor = make_pre_post_processors(
-        policy_cfg=policy_config,
-        pretrained_path=cfg.policy.pretrained_path,
-        pretrained_revision=policy_config.pretrained_revision,
-        dataset_stats=dataset_stats,
-        preprocessor_overrides={
-            "device_processor": {"device": cfg.device},
-            "rename_observations_processor": {"rename_map": cfg.rename_map},
-        },
-    )
-
-    if isinstance(cfg.inference, SyncInferenceConfig) and any(
-        isinstance(step, RelativeActionsProcessorStep) and step.enabled
-        for step in getattr(preprocessor, "steps", ())
-    ):
-        raise NotImplementedError(
-            "SyncInferenceEngine does not support policies with relative actions for now."
-            "Use --inference.type=rtc or remove relative action processor steps from the policy pipeline."
+    if is_api:
+        preprocessor, postprocessor = None, None
+    else:
+        preprocessor, postprocessor = make_pre_post_processors(
+            policy_cfg=policy_config,
+            pretrained_path=cfg.policy.pretrained_path,
+            pretrained_revision=policy_config.pretrained_revision,
+            dataset_stats=dataset_stats,
+            preprocessor_overrides={
+                "device_processor": {"device": cfg.device},
+                "rename_observations_processor": {"rename_map": cfg.rename_map},
+            },
         )
+
+        if isinstance(cfg.inference, SyncInferenceConfig) and any(
+            isinstance(step, RelativeActionsProcessorStep) and step.enabled
+            for step in getattr(preprocessor, "steps", ())
+        ):
+            raise NotImplementedError(
+                "SyncInferenceEngine does not support policies with relative actions for now."
+                "Use --inference.type=rtc or remove relative action processor steps from the policy pipeline."
+            )
 
     # --- 7. Inference strategy (needs policy + pre/post + hardware) --
     logger.info(

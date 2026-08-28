@@ -1,0 +1,107 @@
+# NexArm Pi0 (flow) inference config — API client strategy (remote inference)
+#
+# 把模型推理的重计算部分(10 步 flow-matching 前向过 PaliGemma 3B)卸载到远端
+# 推理服务器(如 4090),本地只负责机械臂连接、图像/关节数据采集、控制循环、
+# 安全限位与首帧阻尼。客户端不加载模型权重、不需要 GPU。
+#
+# ===== 部署拓扑 =====
+#   推理服务器(4090,有 GPU):
+#     pip install -e ".[core_scripts,training]" && pip install -r server/requirements.txt
+#     python server/policy_server.py \
+#       --ckpt outputs/train/nexarm_pi0/checkpoints/040000/pretrained_model \
+#       --host 0.0.0.0 --port 8000
+#     # 小显存机器可选: --quantization int8wo
+#
+#   本地机器人主机(无 GPU 即可):
+#     pip install -e ".[core_scripts]" && pip install msgpack   # 见 server/requirements.txt
+#     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True HF_HUB_OFFLINE=1 \
+#     python -m lerobot.scripts.lerobot_rollout \
+#       --config_path=examples/nexarm_pi0/inference_api_client.yaml \
+#       --policy.path=outputs/train/nexarm_pi0/checkpoints/040000/pretrained_model
+#       # --policy.path 仅用于读取 config.json 元数据(action 顺序 / chunk_size 等),
+#       # 不加载 safetensors 权重。ckpt 路径需在本地可访问(复制 config.json 即可,
+#       # 或整目录拷贝;权重文件不会被读取)。
+#
+# ===== 工作原理 =====
+#   pi0 是 chunk-based:一次 RPC 返回整 chunk(50 步动作),客户端 deque 缓存逐帧 pop。
+#   RPC 频率 ~0.6 次/秒(@30fps),每次上行 ~100KB(JPEG)、下行 ~1.2KB(chunk)。
+#   网络延迟被 chunk 缓冲 + ActionInterpolator 自然掩盖。
+#   详见 src/lerobot/rollout/inference/api.py 与 server/policy_server.py。
+#
+# ===== 与本地推理(inference_base.yaml)的差异 =====
+#   - inference.type: api(而非默认 sync)
+#   - device: cpu(客户端无 GPU;服务器侧 device 由服务器自己管)
+#   - 无 quantization / use_amp / gradient_checkpointing / use_torch_compile(都是服务器侧事务)
+#   - robot / cameras / safety / strategy / fps / task 完全相同 —— 本地控制逻辑零改动
+#
+# ===== task 必须与训练时 single_task 一致 =====
+
+robot:
+  type: nexarm_follower
+  port: /dev/ttyUSB0
+  baudrate: 1000000
+  disable_torque_on_disconnect: false
+
+  # ===== Safety Parameters(与 inference_base.yaml 一致)=====
+  state_safety_margin: 100
+  max_consecutive_anomalies: 5
+  max_relative_target: 500
+
+  # ===== First-Frame Damper =====
+  # 远端推理首帧 RPC 往返 + 服务器前向 ~0.1-0.4s,首帧动作可能突变,阻尼仍需启用。
+  first_frame_gap_threshold_s: 0.2
+  first_frame_min_delta: 50
+  first_frame_warmup_frames: 15
+
+  safe_rest_positions:
+    shoulder_pan.pos: 2082
+    shoulder_lift.pos: 2370
+    elbow_flex.pos: 1664
+    wrist_flex.pos: 2505
+    wrist_roll.pos: 2054
+    gripper.pos: 1690
+
+  cameras:
+    front:
+      type: opencv
+      index_or_path: 6
+      width: 640
+      height: 480
+      fps: 30
+      fourcc: MJPG
+    wrist:
+      type: opencv
+      index_or_path: 4
+      width: 640
+      height: 480
+      fps: 30
+      fourcc: MJPG
+
+# 纯推理,不录制数据
+strategy:
+  type: base
+
+# 远端 API 推理后端
+# 字段直接挂在 inference 下(与 sync/rtc 同级,draccus ChoiceRegistry 平铺):
+#   --inference.server_url=... --inference.n_action_steps=50
+inference:
+  type: api
+  #server_url: http://127.0.0.1:8000   # 改成 4090 服务器 IP
+  server_url: http://192.168.30.30:8000   # 改成 4090 服务器 IP
+  timeout: 5.0
+  n_action_steps: 50                   # 与 policy config 的 n_action_steps 一致
+
+# Pi0 policy —— 本地仅读 config.json 元数据,不加载权重。
+# ⚠️ 当 --policy.path 通过 CLI 传入时,yaml 的 policy 段被忽略(见 inference_base.yaml 注释)。
+# 真实生效值来自 checkpoint 的 config.json。
+policy:
+  type: pi0
+
+fps: 30
+duration: 120
+move_to_start_position: true
+return_to_initial_position: true
+device: cpu                 # 客户端无 GPU;服务器侧 device 由服务器自管
+task: "Put blue cube in cup"
+display_data: false
+play_sounds: false
