@@ -6,8 +6,27 @@
 # - No dataset dependency, no encoding pressure, stable USB bus
 # - Recommended for model evaluation and deployment on RTX 5060 8GB
 #
+# ===== 相关方案 =====
+#   - 卸载到 4090/3090 边端推理服务(本地无 GPU):见 examples/nexarm_pi0fast/inference_api_client.yaml
+#     与 server/DEPLOY.md
+#   - 解码提前终止优化(单 chunk 5.6s -> 0.65s,必装):见 README_NEXARM.md
+#     「Pi0-FAST 自回归解码提前终止优化」章节。未优化时 5060/4090 单 chunk ~5.6-6.7s 不可用。
+#
 # 显存：训练用 bf16 → checkpoint ~4.6GB，加载后 + KV-cache + 激活 ~6GB，5060 8GB 舒适。
 # 推理时 policy.dtype=bfloat16 为安全网：即使 checkpoint 是 fp32 也会强制转 bf16。
+#
+# ===== 运行前必设环境变量（RTX 5060 8GB / 离线机器）=====
+#   export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True   # 抑制显存碎片，否则 .to(cuda) 时差几十 MB OOM
+#                                                             # 实测峰值 ~7.3GB，不开此项会 OOM
+#   export HF_HUB_OFFLINE=1                                    # 强制走本地 HF 缓存，避免联网超时
+#                                                             # 需预缓存: lerobot/fast-action-tokenizer,
+#                                                             #          google/paligemma-3b-pt-224, lerobot/pi0fast-base
+#
+# ===== FAST 动作分词器说明 =====
+# checkpoint 的 policy_preprocessor.json 中 action_tokenizer_name 已改为 lerobot/fast-action-tokenizer
+# （原继承自基座的 physical-intelligence/fast 未缓存）。两者为同一 FAST 分词器，替换安全。
+# 如重新训练生成新 checkpoint，需再次修改其 policy_preprocessor.json，或在联网环境预先缓存
+# physical-intelligence/fast。
 
 robot:
   type: nexarm_follower
@@ -62,15 +81,26 @@ robot:
 strategy:
   type: base
 
-# Pi0-FAST 推理参数（通过 rollout 的 policy yaml_overrides 合并到 --policy.path 加载的 config）
+# Pi0-FAST 推理参数
+# ⚠️ 重要：当 --policy.path 通过 CLI 传入时，本 yaml 的 policy: 段整体被忽略
+#   （parser.extract_path_fields_from_config 仅在 policy 段含 path 键时才扁平化为
+#    cli overrides）。因此 dtype/use_kv_cache/max_decoding_steps/gradient_checkpointing
+#    等字段必须用 CLI --policy.xxx=value 覆盖，写在 yaml 里无效。
+#   下方值仅作文档说明，真实生效值来自 checkpoint 的 config.json，可用 CLI 覆盖。
+#
 # use_kv_cache=true 默认开启，自回归解码 256 token 不重复计算。
+# 推理必须 --policy.gradient_checkpointing=false：checkpoint config.json 训练时为 true，
+# 不覆盖会继承 True，8GB 卡上前向易 OOM。与 test_load_5060.py 保持一致。
 # rtc_config 保持 None：base strategy 走 select_action，启用 RTC 会触发 assert。
 policy:
   type: pi0_fast
-  dtype: bfloat16
-  use_kv_cache: true
-  max_decoding_steps: 256
-  temperature: 0.0             # 0 = 贪心解码，确定性输出
+  dtype: bfloat16          # 生效需 CLI: --policy.dtype=bfloat16 （config.json 已是 bf16，可不传）
+  use_kv_cache: true       # 生效需 CLI: --policy.use_kv_cache=true （config.json 已 true）
+  max_decoding_steps: 256  # 8GB 紧张时可 CLI 降到 --policy.max_decoding_steps=192 削峰
+  temperature: 0.0         # 0 = 贪心解码，确定性输出
+  # 以下两项 yaml 不生效，须 CLI 覆盖：
+  #   --policy.gradient_checkpointing=false   (必设，推理关 gc)
+  #   --policy.compile_model=false            (8GB 不要开 torch.compile)
 
 fps: 30
 duration: 120
