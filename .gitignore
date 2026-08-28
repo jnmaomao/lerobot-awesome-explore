@@ -19,6 +19,9 @@ env/
 venv/
 env.bak/
 venv.bak/
+# Local source backups (pre-edit snapshots, e.g. *.bak_20260828_111900, *.quant_backup_20260826_142118)
+*.bak_*
+*.quant_backup_*
 .python-version
 __pypackages__/
 node_modules/
