@@ -55,6 +55,14 @@ _RTC_ERROR_RETRY_DELAY_S: float = 0.5
 _RTC_MAX_CONSECUTIVE_ERRORS: int = 10
 # Hard timeout for joining the RTC thread on stop().
 _RTC_JOIN_TIMEOUT_S: float = 3.0
+# Cold-start inferences to discard before tracking latency. The first few calls
+# pay one-off cudnn autotuning / lazy-init costs (observed ~0.67s vs ~0.30s
+# steady on RTX 5060 + int8). ``latency_tracker`` would otherwise pin its max
+# at the cold-start spike for the whole run, inflating ``delay`` and collapsing
+# the RTC blend zone (``delay`` > ``execution_horizon`` → prefix weights
+# degenerate to a cliff → jerky "stop-and-go" motion). Independent of
+# torch.compile warmup (which is disabled on 8GB cards).
+_RTC_LATENCY_WARMUP: int = 3
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +259,14 @@ class RTCInferenceEngine(InferenceEngine):
             time_per_chunk = 1.0 / self._fps
             policy_device = torch.device(self._device)
 
-            warmup_required = max(1, self._compile_warmup_inferences) if self._use_torch_compile else 0
+            # Latency warmup runs regardless of torch.compile: the first few
+            # inferences pay one-off autotuning/init costs that would otherwise
+            # poison the latency tracker (see _RTC_LATENCY_WARMUP). When compile
+            # is enabled we also keep its own warmup count so the compile graph
+            # is fully primed before we start trusting measured latencies.
+            warmup_required = _RTC_LATENCY_WARMUP
+            if self._use_torch_compile:
+                warmup_required = max(warmup_required, self._compile_warmup_inferences)
             inference_count = 0
             consecutive_errors = 0
 
@@ -273,7 +288,15 @@ class RTCInferenceEngine(InferenceEngine):
                         idx_before = queue.get_action_index()
                         prev_actions = queue.get_left_over()
 
-                        latency = latency_tracker.max()
+                        # p95 of the recent latency window, NOT the all-time max.
+                        # max() is monotonic and never resets when torch.compile
+                        # is off, so a single cold-start/USB/GC spike would pin
+                        # ``delay`` forever and collapse the blend zone. p95 over
+                        # the 100-sample deque ignores isolated spikes while
+                        # still tracking genuine slowdowns. Returns 0.0 while the
+                        # tracker is empty (warmup) → delay=0, which is safe: the
+                        # first chunk has no leftover so no prefix guidance runs.
+                        latency = latency_tracker.p95()
                         delay = math.ceil(latency / time_per_chunk) if latency else 0
 
                         obs_batch = build_dataset_frame(self._hw_features, obs, prefix="observation")
@@ -315,7 +338,11 @@ class RTCInferenceEngine(InferenceEngine):
 
                         inference_count += 1
                         consecutive_errors = 0
-                        is_warmup = self._use_torch_compile and inference_count <= warmup_required
+                        # Warmup is no longer gated on torch.compile — see the
+                        # warmup_required comment above. During warmup we keep
+                        # resetting the tracker so cold-start spikes never enter
+                        # the p95 window.
+                        is_warmup = inference_count <= warmup_required
                         if is_warmup:
                             latency_tracker.reset()
                         else:
@@ -323,15 +350,44 @@ class RTCInferenceEngine(InferenceEngine):
 
                         queue.merge(original, processed, new_delay, idx_before)
 
-                        if (
-                            is_warmup
-                            and inference_count >= warmup_required
-                            and not self._compile_warmup_done.is_set()
-                        ):
-                            self._compile_warmup_done.set()
-                            logger.info("Compile warmup complete (%d inferences)", inference_count)
+                        if is_warmup and inference_count >= warmup_required:
+                            if not self._compile_warmup_done.is_set():
+                                self._compile_warmup_done.set()
+                                logger.info("Compile warmup complete (%d inferences)", inference_count)
+                            if not getattr(self, "_latency_primed", False):
+                                # Latency warmup done: cold-start spikes discarded.
+                                # The *next* inference's ``delay`` will reflect the
+                                # steady-state p95. Log the config so the blend zone
+                                # is auditable without DEBUG level.
+                                self._latency_primed = True
+                                logger.info(
+                                    "Latency warmup complete (%d cold-start inferences discarded)",
+                                    warmup_required,
+                                )
 
-                        logger.debug("RTC inference latency=%.2fs, queue=%d", new_latency, queue.qsize())
+                        # Periodic INFO diagnostic (every ~1s at 30Hz) so the
+                        # effective blend zone is auditable without DEBUG level.
+                        # Per-frame detail stays at DEBUG.
+                        if inference_count % 30 == 0:
+                            logger.info(
+                                "RTC diag: latency=%.2fs delay(p95)=%d horizon=%d blend=%d "
+                                "queue=%d real_delay=%d",
+                                new_latency,
+                                delay,
+                                self._rtc_config.execution_horizon,
+                                max(0, self._rtc_config.execution_horizon - delay),
+                                queue.qsize(),
+                                new_delay,
+                            )
+                        logger.debug(
+                            "RTC inference latency=%.2fs, queue=%d, delay(p95)=%d, "
+                            "execution_horizon=%d, blend=%d",
+                            new_latency,
+                            queue.qsize(),
+                            delay,
+                            self._rtc_config.execution_horizon,
+                            max(0, self._rtc_config.execution_horizon - delay),
+                        )
 
                     except Exception as e:
                         consecutive_errors += 1
