@@ -53,6 +53,8 @@
 #   pip install torchao==0.18.0              # 配 torch 2.11；int8 kernel 在 sm_120(Blackwell) 已验证
 #   依赖修复：diffusers 0.35.2 + torchao 0.18 有一个 logger 加载顺序 bug，会导致 import lerobot
 #   时 NameError。已对环境内 diffusers/quantizers/torchao/torchao_quantizer.py 打补丁（logger 提前定义）。
+#   上游已在 diffusers >= 0.37.0 修复（commit #12901，修法一致）；本环境锁定 0.35.2 故保留补丁。
+#   一键检测/打补丁：python scripts/check_patch_diffusers_torchao.py [--apply]
 #   详见 README_NEXARM.md「Pi0 int8 量化部署」章节。
 #   int4 路径暂不可用：torchao 0.18 的 Int4WeightOnlyConfig 在 sm_120 上 tinygemm kernel 报
 #   Requires mslk >= 1.0.0，需额外装 mslk，稳定性未知，故默认走 int8。
