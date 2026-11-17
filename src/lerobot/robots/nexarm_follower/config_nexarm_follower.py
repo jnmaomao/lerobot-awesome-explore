@@ -33,8 +33,10 @@ class NexArmFollowerConfig(RobotConfig):
     # Motion parameters sent via CMD 56 after connect.
     # acc: 0–254. 0 = max (no ramp), higher = softer ramp.
     # motion_speed: 0–3400 raw units/s. 0 = no limit.
+    # 1000 (~1 rad/s) is a bring-up backstop; raise toward 2000 after the
+    # direction signs are verified and the cage is opened up.
     motion_acc: int = 100
-    motion_speed: int = 2000
+    motion_speed: int = 1000
     safe_rest_positions: dict[str, float] = field(default_factory=dict)
     state_safety_margin: int = 100
     max_consecutive_anomalies: int = 5

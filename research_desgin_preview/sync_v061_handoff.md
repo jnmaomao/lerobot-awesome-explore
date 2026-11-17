@@ -49,9 +49,8 @@ git merge v0.6.1        # 冲突 4 文件 5 块，全按上述规则解决后提
 - [x] **T3. context.py 合并语义（api 路径）**：✅ **PASS 11/11**（stub 机器人 monkeypatch，`_load_pretrained_policy` 注入"被调用即失败"探针）。不触发本地 torch.compile ✓；`use_torch_compile=True` 原样透传 RuntimeContext（无 False 回写）+ `policy_config.compile_model` 戳记给远端 ✓；策略权重不本地加载（policy=None）✓；pre/post processors 跳过 ✓；`ApiInferenceEngine` 持有机器人侧 action 键序 ✓。
 - [x] **T4. context.py 合并语义（本地路径）**：✅ **PASS 7/7**。`use_torch_compile=True` + backend=eager：`_wrap_predict_action_chunk_with_torch_compile()` 真实接线成功（predict_action_chunk 被替换）、`cfg.use_torch_compile=True` 向下游传播 ✓；backend 不可达（torch 2.11 在 wrap 时即抛 `InvalidBackend`，走真实 except 分支）：`cfg.use_torch_compile` 回退 False 并经 RuntimeContext 传播、策略方法未被替换 ✓。
 - [x] **T5. RTC 门控**：✅ **PASS 15/15**。不支持 RTC 的 policy 带 RTC 配置 → ValueError 且文案来自 #4228 新门控（含 `--inference.type=sync` 提示）✓；`supports_rtc()=True` 但 `predict_action_chunk` 缺 RTC 形参 → 签名 bind 检查同样拦截 ✓；RTC-capable policy → 构建成功、`rtc_config` 挂载、`init_rtc_processor` 调用一次 ✓；本地冷启动修复未回归：`_RTC_LATENCY_WARMUP=3` 在场、空 tracker p95()=0.0（delay=0 安全路径）、p95 滑窗忽略孤立尖峰（max 会钉死）、100 样本窗口滚动淘汰 ✓。
-- [ ] **T6. 全量回归**：nexarm + teleop 一套完整 record 流程（含 move_to_start_position、传感器预热、log_say 着色输出）。
+- [x] **T6. 全量回归**：✅ **PASS**（2026-11-17 16:02 真机执行）。`lerobot-record --config_path=examples/nexarm_pi0fast/record.yaml`：draccus 0.11.6 解析完整配置树 ✓；leader(/dev/ttyUSB1)+follower(/dev/ttyUSB0) 双总线连接、warm-up 一次通过 6 关节全有效 ✓；front(video6)+wrist(video4) 双相机取流（wrist 原生 60fps 容错告警符合本地设计）✓；episode 0 录制 35s、1046 帧样本、双相机 x264 编码落盘（标准 LeRobotDataset 布局：data/chunk-000/*.parquet + meta + videos）✓；Esc 干净断开退出 ✓。合并后 record 全链路（解析→主从控制→取流→编码→落盘）验证通过。
   - 已完成子项：log_say ANSI 三色着色 ✓、say() TTS 容错（FileNotFoundError→warning 不抛出）✓、`LeRobotFormatter`（init_logging 嵌套类）格式化 ✓、move_to_start_position（context.py:416-443）与传感器预热（context.py:401-406）结构在位 ✓；`tests/test_rollout.py` 27/27 ✓、`tests/cameras/test_opencv.py + tests/utils` 75 passed/1 skipped ✓。
-  - **剩余**：真机连接后跑一次完整 record（接 leader/follower 串口、video4/6 相机），并按 nexarm bring-up 流程分阶段放开安全笼。
 
 ## 四、背景与关联
 

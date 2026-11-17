@@ -1,0 +1,83 @@
+(nexarm) E:\Code\github\r1-a7-autonomous-checkout-main\lerobot-awesome-explore>python examples/nexarm/teleoperate_pico.py --dry-run
+<frozen importlib._bootstrap>:488: RuntimeWarning: to-Python converter for struct pinocchio::python::DeprecatedBool already registered; second conversion method ignored.
+[IK] nq=5, EE frame='gripper_base_link', limits ±2.09 rad
+[SAFETY CAGE] level=0 dev=±0.050rad/axis step<=0.015rad/tick grip=anchor±60tick
+[TELEOP GAIN] pos=0.3 rot=0.3 (hand motion scaled before IK)
+Waiting for PICO motion data...
+PICO browser:  https://192.168.22.104:8012/?ws=wss://192.168.22.104:8012
+  (accept the self-signed certificate warning, then start the XR session)
+Control: squeeze RIGHT grip = follow, release = HOLD, B = HOLD, trigger = gripper.
+Serving file://E:\Code\github\r1-a7-autonomous-checkout-main\lerobot-awesome-explore at /static
+Visit: https://vuer.ai?grid=False
+[60] HOLD (stale XR (age=2447944.12s))
+[120] HOLD (stale XR (age=2447946.16s))
+[180] HOLD (stale XR (age=2447948.19s))
+[240] HOLD (stale XR (age=2447950.22s))
+[300] HOLD (stale XR (age=2447952.25s))
+websocket is connected. id:95398776-1800-4ce3-b1b0-94cd324b49e8
+default socket worker is up, adding clientEvents
+Uplink task running. id:95398776-1800-4ce3-b1b0-94cd324b49e8
+[360] HOLD (stale XR (age=2447954.30s))
+[420] HOLD (stale XR (age=2447956.31s))
+[480] HOLD (stale XR (age=2447958.36s))
+[540] HOLD (stale XR (age=2447959.95s))
+[600] HOLD (stale XR (age=2447959.95s))
+[651] ACTIVE — anchored at q=[0. 0. 0. 0. 0.]
+[651] ok ik=34.1ms q=[-0.  0.  0. -0. -0.] grip=2448
+[681] ok ik=5.2ms q=[ 0.026 -0.011 -0.04   0.049 -0.007] grip=2448
+[711] CAGE — output clipped (box)
+[741] ok ik=2.6ms q=[ 0.028  0.012 -0.045  0.038 -0.007] grip=2448
+[771] ok ik=2.4ms q=[ 0.025  0.004 -0.04   0.039 -0.009] grip=2448
+[801] ok ik=2.3ms q=[ 0.017 -0.007 -0.033  0.038 -0.011] grip=2448
+[815] HOLD — grip released
+[861] HOLD (waiting for grip)
+[921] HOLD (waiting for grip)
+[981] HOLD (stale XR (age=1.88s))
+[1041] HOLD (stale XR (age=3.94s))
+[1101] HOLD (stale XR (age=5.97s))
+[1161] HOLD (stale XR (age=8.02s))
+[1221] HOLD (stale XR (age=10.05s))
+[1281] HOLD (stale XR (age=12.11s))
+[1341] HOLD (stale XR (age=14.14s))
+[1401] HOLD (stale XR (age=16.17s))
+[1461] HOLD (stale XR (age=18.20s))
+[1521] HOLD (stale XR (age=20.25s))
+[1581] HOLD (stale XR (age=22.30s))
+[1641] HOLD (stale XR (age=24.34s))
+[1701] HOLD (stale XR (age=26.38s))
+[1761] HOLD (stale XR (age=28.44s))
+[1821] HOLD (stale XR (age=30.47s))
+[1881] HOLD (stale XR (age=32.50s))
+[1941] HOLD (stale XR (age=34.53s))
+[2001] HOLD (stale XR (age=36.59s))
+[2061] HOLD (stale XR (age=38.64s))
+[2121] HOLD (stale XR (age=40.72s))
+[2181] HOLD (stale XR (age=42.75s))
+[2241] HOLD (stale XR (age=44.80s))
+[2301] HOLD (stale XR (age=46.83s))
+[2361] HOLD (stale XR (age=48.88s))
+[2421] HOLD (stale XR (age=50.91s))
+[2481] HOLD (stale XR (age=52.97s))
+[2541] HOLD (stale XR (age=55.03s))
+[2601] HOLD (stale XR (age=57.08s))
+[2661] HOLD (stale XR (age=59.12s))
+[2721] HOLD (stale XR (age=61.20s))
+[2781] HOLD (stale XR (age=63.25s))
+[2841] HOLD (stale XR (age=65.30s))
+[2901] HOLD (stale XR (age=67.36s))
+
+Stopping PICO teleoperation.
+
+
+kingpoint@kingpoint-TX-Robot:~/kp_robot/r1-a7-autonomous-checkout-main$ sudo /sbin/iwconfig wlp130s0 power off
+[sudo] password for kingpoint: 
+Sorry, try again.
+[sudo] password for kingpoint: 
+Sorry, try again.
+[sudo] password for kingpoint: 
+kingpoint@kingpoint-TX-Robot:~/kp_robot/r1-a7-autonomous-checkout-main$ /sbin/iwconfig wlp130s0 | grep -i "power management"
+          Power Management:off
+kingpoint@kingpoint-TX-Robot:~/kp_robot/r1-a7-autonomous-checkout-main$ NM_NAME=$(nmcli -t -f NAME,DEVICE connection show --active | grep wlp130s0 | cut -d: -f1)
+kingpoint@kingpoint-TX-Robot:~/kp_robot/r1-a7-autonomous-checkout-main$ sudo nmcli connection modify "$NM_NAME" 802-11-wireless.powersave 2
+kingpoint@kingpoint-TX-Robot:~/kp_robot/r1-a7-autonomous-checkout-main$ sudo nmcli device reapply wlp130s0
+Error: Reapplying connection to device 'wlp130s0' (/org/freedesktop/NetworkManager/Devices/3) failed: Can't reapply changes to '802-11-wireless.powersave' setting

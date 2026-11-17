@@ -53,9 +53,9 @@ dataset:
   rgb_encoder:
     vcodec: h264                # CPU 软编码（RTX 5060 Blackwell NVENC 需 ffmpeg ≥7.1，当前 6.1.1 不支持）
   push_to_hub: false
-  root: /home/kingpoint/kp_robot/nexarm_finish_zip/lerobot-awesome-explore/datasets/nexarm_pi0fast/put_blue_cube_in_cup/   # 指定你想要的路径
+  root: /home/kingpoint/kp_robot/nexarm_finish_zip/lerobot-awesome-explore/datasets/nexarm_pi0fast/put_blue_cube_in_cup_v_0_6_1/   # 指定你想要的路径
 
-display_data: false
+display_data: true
 play_sounds: false
 
 # Status lamp (optional): ESP32 + NeoPixel ring that shows recording progress
